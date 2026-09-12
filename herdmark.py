@@ -2,6 +2,7 @@
 """herdmark — registry-first harness roster for Herdr, scoped to the directory you are in.
 
   herdmark                      what is raised here (live · cold · absent), with trust
+                                (no args = this registry)
   herdmark <harness>            attach to that harness here, or raise it with defaults
   herdmark new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N]
   herdmark enter <name>         focus if live, else resume in a new tab
@@ -24,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -36,10 +38,16 @@ PLUGIN_ID = "herdmark"
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 LANES = ("green", "yellow", "red")
 READY = {"idle", "done"}
+SHELLS = {"zsh", "bash", "fish", "sh", "dash", "ksh"}
 GLYPH = {"local": "⌂", "mesh": "⌂", "vendor": "↑"}  # ⌂ ↑
 DASH = "—"
 HERDR_CONFIG = Path("~/.config/herdr/config.toml").expanduser()
 SEATS_JSON = Path("~/.config/herdr/plugins/config/herdr-seats/seats.json").expanduser()
+GROK_AGENTS_DIR = Path("~/.grok/agents").expanduser()
+CTX_KEYS = (
+    "workspace_id", "workspace_cwd", "tab_id", "tab_label",
+    "focused_pane_id", "focused_pane_cwd", "focused_pane_agent",
+)
 
 
 class HerdrError(RuntimeError):
@@ -151,6 +159,46 @@ class Ctx:
         )
 
 
+def invocation_ctx(env=None) -> dict:
+    """The caller's directory and workspace — not the picker popup's own pane."""
+    env = os.environ if env is None else env
+    raw = env.get("HERDR_PLUGIN_CONTEXT_JSON") or env.get("HERDMARK_CTX") or "{}"
+    try:
+        parsed = json.loads(raw)
+        data = parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        data = {}
+    out = {k: data[k] for k in CTX_KEYS if data.get(k)}
+    if not out.get("workspace_id") and env.get("HERDR_WORKSPACE_ID"):
+        out["workspace_id"] = env["HERDR_WORKSPACE_ID"]
+    if not out.get("tab_id") and env.get("HERDR_TAB_ID"):
+        out["tab_id"] = env["HERDR_TAB_ID"]
+    pane_id = out.get("focused_pane_id") or env.get("HERDR_PANE_ID")
+    if pane_id:
+        out["focused_pane_id"] = pane_id
+    if not out.get("focused_pane_cwd"):
+        cwd = out.get("workspace_cwd")
+        if not cwd and pane_id:
+            try:
+                cwd = (herdr("pane", "get", pane_id).get("pane") or {}).get("cwd")
+            except (HerdrError, OSError):
+                cwd = None
+        if cwd:
+            out["focused_pane_cwd"] = cwd
+    return out
+
+
+def picker_open_args(ctx: dict) -> list[str]:
+    args = [
+        "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "picker", "--focus",
+        "--env", "HERDMARK_CTX=" + json.dumps(ctx),
+        "--env", "HERDMARK_MODE=tab",
+    ]
+    if ctx.get("focused_pane_cwd"):
+        args += ["--cwd", ctx["focused_pane_cwd"]]
+    return args
+
+
 # --- scope -----------------------------------------------------------------
 
 def at_or_beneath(path: str, root: str) -> bool:
@@ -190,6 +238,11 @@ def slug(s: str) -> str:
     if not s or not s[0].isalpha():
         s = ("h-" + s)[:32].rstrip("-")
     return s if NAME_RE.match(s) else "harness"
+
+
+def sitting_head(name: str) -> str:
+    """First word of a sitting (`builder-minaret` → `builder`): the claim, not the note."""
+    return slug((name or "").split("-")[0])
 
 
 def unique_name(base: str, taken: set[str]) -> str:
@@ -313,6 +366,20 @@ def workspaces() -> list[dict]:
         return []
 
 
+def snapshot() -> dict:
+    try:
+        res = herdr("api", "snapshot")
+    except (HerdrError, OSError):
+        return {}
+    snap = res.get("snapshot")
+    return snap if isinstance(snap, dict) else {}
+
+
+def tab_labels(snap: dict | None = None) -> dict[str, str]:
+    snap = snapshot() if snap is None else snap
+    return {t["tab_id"]: (t.get("label") or "") for t in snap.get("tabs") or [] if t.get("tab_id")}
+
+
 # --- trust (delegated to agent-deck-trust; never re-encoded here) --------------------
 
 def trust_available() -> bool:
@@ -363,9 +430,10 @@ def verdict_mark(v: dict) -> str:
 # --- registry ------------------------------------------------------------------
 
 def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], roster: list[dict],
-                   matcher=None, subject: str = "") -> dict:
+                   matcher=None, subject: str = "", tab_label: dict | None = None) -> dict:
     """Partition the herd for one root: live here, cold here, absent here."""
     matcher = matcher or (lambda tool: trust_match(tool, root))
+    labels = tab_label or {}
     live = [a for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], root)]
     live_by_pane = {a["pane_id"]: a for a in live}
     pane_ids = {p.get("pane_id") for p in panes}
@@ -375,8 +443,10 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
     live_rows, seen_pane = [], set()
     for a in live:
         r = by_pane.get(a["pane_id"])
+        lab = labels.get(a.get("tab_id"), "")
         live_rows.append({
-            "name": (r or {}).get("name") or slug(a.get("terminal_title_stripped") or a.get("agent") or "agent"),
+            "name": ((r or {}).get("name") or (slug(lab) if lab else "")
+                     or slug(a.get("terminal_title_stripped") or a.get("agent") or "agent")),
             "harness": (r or {}).get("harness") or a.get("agent"),
             "kind": a.get("agent"), "model": (r or {}).get("model", ""), "lane": (r or {}).get("lane", ""),
             "status": a.get("agent_status") or "live", "pane_id": a["pane_id"], "tab_id": a.get("tab_id"),
@@ -456,8 +526,24 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
 
 # --- launch --------------------------------------------------------------------
 
+def claim_argv(h: dict, sitting: str, agents_dir: Path | None = None) -> list[str]:
+    """Grok `--agent <member>` is the claim. Pass only when a definition file exists."""
+    flag = h.get("claim_flag")
+    if not flag or not sitting or is_wrapper(h):
+        return []
+    word = sitting_head(sitting)
+    if not word or not NAME_RE.match(word):
+        return []
+    if h.get("kind") == "grok":
+        d = Path(agents_dir) if agents_dir is not None else GROK_AGENTS_DIR
+        if not (d / f"{word}.md").is_file():
+            return []
+    return [flag, word]
+
+
 def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str = "", deny: str = "",
-               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None) -> list[str]:
+               seat: Path | None = None, resume_id: str = "", sitting: str = "",
+               extra: list[str] | None = None, agents_dir: Path | None = None) -> list[str]:
     """Agent-side argv (after `--` for native kinds; after the wrapper for house wrappers)."""
     argv: list[str] = []
     if is_wrapper(h):
@@ -475,6 +561,7 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         argv += [h["tools_deny_flag"], deny]
     if seat and h.get("seat_flag"):
         argv += [h["seat_flag"], str(seat)]  # claude takes -file; pi's --append-system-prompt accepts a path
+    argv += claim_argv(h, sitting, agents_dir=agents_dir)
     if resume_id:
         spec = list(h.get("resume") or [])
         if spec == ["resume"]:
@@ -503,37 +590,88 @@ def pick_workspace(ctx: Ctx, root: str) -> str | None:
 
 
 def create_tab(workspace_id: str | None, root: str, label: str) -> dict:
+    """New tab labelled with the sitting. Identity is the tab, never pane --title / rename."""
     if workspace_id:
         res = herdr("tab", "create", "--workspace", workspace_id, "--cwd", root, "--label", label, "--no-focus")
     else:
         res = herdr("workspace", "create", "--cwd", root, "--label", os.path.basename(root) or root, "--no-focus")
+        tab = res.get("tab") or {}
+        tid = tab.get("tab_id")
+        if tid and (tab.get("label") or "") != label:
+            try:
+                herdr("tab", "rename", tid, label)
+            except HerdrError:
+                pass
     pane = res.get("root_pane") or {}
-    if not pane.get("pane_id"):
+    tab = res.get("tab") or {}
+    pid = pane.get("pane_id")
+    if not pid:
         raise HerdrError(f"no root pane returned: {res}")
-    return pane
+    return {
+        "pane_id": pid,
+        "tab_id": pane.get("tab_id") or tab.get("tab_id"),
+        "workspace_id": pane.get("workspace_id") or tab.get("workspace_id") or workspace_id,
+    }
+
+
+def shell_ready_from_process(info: dict) -> bool:
+    """True when the pane's foreground is a single shell — the contract for `agent start`."""
+    proc = info.get("process_info") or info
+    fg = proc.get("foreground_processes") or []
+    if len(fg) != 1:
+        return False
+    name = (fg[0].get("name") or "").lstrip("-")
+    return name in SHELLS
+
+
+def wait_shell(pane_id: str, timeout_ms: int = 10000) -> None:
+    """A just-created tab is often still spawning; agent start then returns agent_pane_busy."""
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        try:
+            if shell_ready_from_process(herdr("pane", "process-info", "--pane", pane_id)):
+                return
+        except (HerdrError, OSError):
+            pass
+        time.sleep(0.15)
+
+
+def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
+    wait_shell(pane_id)
+    args = ["agent", "start", name, "--kind", kind, "--pane", pane_id, "--timeout", "30000"]
+    if argv:
+        args += ["--", *argv]
+    last: HerdrError | None = None
+    for _ in range(5):
+        try:
+            return herdr(*args)
+        except HerdrError as e:
+            last = e
+            msg = str(e)
+            if any(k in msg for k in ("not_ready", "blocked", "agent_not_ready")):
+                return {}
+            if "agent_pane_busy" in msg or "not an available shell" in msg:
+                time.sleep(0.4)
+                continue
+            raise
+    raise last or HerdrError(f"agent start {name} failed")
 
 
 def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", lane="", allow="", deny="",
                   seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None,
                   focus: bool = True) -> dict:
-    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, extra)
+    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
     ws = pick_workspace(ctx, root)
     pane = create_tab(ws, root, name)
     pid = pane["pane_id"]
     launched_session = ""
     try:
         if is_wrapper(h):
+            wait_shell(pid)
             herdr("pane", "run", pid, shell_join([h["command"], *argv]), expect_json=False)
         else:
-            args = ["agent", "start", name, "--kind", h["kind"], "--pane", pid, "--timeout", "30000"]
-            if argv:
-                args += ["--", *argv]
-            try:
-                res = herdr(*args)
-                launched_session = ((res.get("agent") or {}).get("agent_session") or {}).get("value") or ""
-            except HerdrError as e:
-                if not any(k in str(e) for k in ("not_ready", "blocked", "agent_not_ready")):
-                    raise
+            res = start_native(name, h["kind"], pid, argv)
+            launched_session = ((res.get("agent") or {}).get("agent_session") or {}).get("value") or ""
     except HerdrError:
         if pane.get("tab_id"):  # do not leave an empty tab behind a failed launch
             try:
@@ -557,12 +695,15 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     return pane
 
 
-def live_names() -> set[str]:
-    names = set()
-    for a in live_agents():
-        t = slug(a.get("terminal_title_stripped") or "")
-        if t:
-            names.add(t)
+def live_names(snap: dict | None = None) -> set[str]:
+    """Taken sittings: tab labels of live agent panes (the sidebar identity token)."""
+    snap = snapshot() if snap is None else snap
+    labels = tab_labels(snap)
+    names: set[str] = set()
+    for a in snap.get("agents") or []:
+        lab = slug(labels.get(a.get("tab_id"), "") or "")
+        if lab:
+            names.add(lab)
     return names
 
 
@@ -598,7 +739,8 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None) -> dict:
     rows = load_roster()
     refresh_sessions(rows)
     agents, panes = live_agents(), live_panes()
-    reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root))
+    reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
+                         tab_label=tab_labels())
     top = git_root(root)
     wider = None
     if top and os.path.realpath(top) != os.path.realpath(root):
@@ -644,8 +786,11 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None) -> None:
     kind = a.get("agent") or ""
     if not kind:
         raise SystemExit(f"herdmark: pane {pane_id} hosts no recognized agent")
+    sitting = tab_labels().get(a.get("tab_id"), "")
     title = a.get("terminal_title_stripped") or ""
-    base = slug(name or (title if title and not title.startswith("-") else kind))
+    noisy = (not title or title.startswith("-") or " - grok " in title.lower()
+             or "waiting" in title.lower() or "running:" in title.lower())
+    base = slug(name or sitting or (title if not noisy else kind))
     rows = load_roster()
     nm = unique_name(base, {r["name"] for r in rows if r.get("pane_id") != a.get("pane_id")})
     rows = [r for r in rows if r.get("pane_id") != a.get("pane_id")]
@@ -717,8 +862,8 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     model = model or (h["models"][0] if h["models"] else "")
     seat = None if (no_seat or not h.get("seat_flag")) else seat_file(root)
     gate(h, root, interactive=False, assume_yes=assume_yes)
-    base = slug(name or f"{h['id']}-{os.path.basename(root.rstrip('/')) or 'root'}")
-    nm = unique_name(base, live_names() | {r["name"] for r in load_roster() if r.get("cwd") != root})
+    base = slug(name or h["id"])
+    nm = unique_name(base, live_names() | {r["name"] for r in load_roster()})
     pane = raise_harness(cat, h, nm, root, ctx, model, lane, allow, deny, seat, extra=extra, focus=focus)
     print(f"raised {nm}  {h['id']}{(' ' + model) if model else ''}{(' ' + lane) if lane else ''}  in {pane['pane_id']}  {tilde(root)}")
 
@@ -910,6 +1055,10 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> None:
     v = verdicts[h["id"]]
     if v["verdict"] == "blocked":
         print(f"  ⊘ refused: {h['id']} on {tilde(root)} is blocked {v['flag']} (T4 under-clearance)"); return
+    taken = live_names() | {r["name"] for r in load_roster()}
+    base = unique_name(slug(h["id"]), taken)
+    name = slug(ask(f"  sitting (tab name) [{base}]: ", base))
+    name = unique_name(name, taken)
     model = ""
     if h["models"]:
         j = choose("model", h["models"] + ["(type another)"])
@@ -932,16 +1081,12 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> None:
     seat = seat_file(root) if h.get("seat_flag") else None
     if seat and ask(f"  inject seat {tilde(str(seat))}? [Y/n] ", "y").lower().startswith("n"):
         seat = None
-    base = slug(f"{h['id']}-{os.path.basename(root.rstrip('/')) or 'root'}")
-    taken = live_names() | {r["name"] for r in load_roster()}
-    name = slug(ask(f"  name [{unique_name(base, taken)}]: ", unique_name(base, taken)))
-    name = unique_name(name, taken)
     if v["verdict"] == "overprivilege":
         if ask(f"  ! overprivilege {v['flag']}: {h['id']} exceeds what {subject} work warrants. proceed? [y/N] ").lower() != "y":
             return
-    argv = build_argv(cat, h, model, lane, allow, deny, seat)
+    argv = build_argv(cat, h, model, lane, allow, deny, seat, sitting=name)
     shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
-    print(f"\n  {name}  →  {shown}\n  new tab in {tilde(root)}")
+    print(f"\n  {name}  →  {shown}\n  new tab named {name} in {tilde(root)}")
     if ask("  raise? [Y/n] ", "y").lower().startswith("n"):
         return
     pane = raise_harness(cat, h, name, root, ctx, model, lane, allow, deny, seat)
@@ -996,12 +1141,10 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 print(f"  {e}"); ask("  enter to continue ")
 
 
-def cmd_open(ctx_env: dict) -> int:
+def cmd_open(env=None) -> int:
     """Action entry: open the popup, forwarding the caller's context (the popup's own is not the caller's)."""
     try:
-        herdr("plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "picker", "--focus",
-              "--env", "HERDMARK_CTX=" + ctx_env.get("HERDR_PLUGIN_CONTEXT_JSON", "{}"),
-              "--env", "HERDMARK_MODE=tab")
+        herdr(*picker_open_args(invocation_ctx(env)))
     except HerdrError as e:
         print(f"herdmark: {e}", file=sys.stderr)
         return 1
@@ -1030,13 +1173,15 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
 
 
 def main(argv: list[str]) -> int:
-    if not argv or argv[0] in ("-h", "--help"):
+    if argv and argv[0] in ("-h", "--help"):
         print(__doc__); return 0
+    if not argv:
+        argv = ["registry"]
     cmd, *rest = argv
     if cmd == "keys":
         cmd_keys(rest[0] if rest else "install"); return 0
     if cmd == "open":
-        return cmd_open(dict(os.environ))
+        return cmd_open()
     if not server_up():
         print("herdmark: no Herdr server (is `herdr` running?)", file=sys.stderr); return 2
     ctx = Ctx.from_env()

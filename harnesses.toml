@@ -22,10 +22,9 @@ yellow = ["--permission-mode", "acceptEdits"]
 red    = ["--permission-mode", "bypassPermissions"]
 
 [lanes.grok]
-# grok --permission-mode values are not enumerated in --help; plan is a guess.
-# Verify with `grok --help` before relying on green.
+# grok --help 2026-09-12: plan, acceptEdits, default, auto, dontAsk, bypassPermissions.
 green  = ["--permission-mode", "plan"]
-yellow = []
+yellow = ["--permission-mode", "acceptEdits"]
 red    = ["--always-approve"]
 
 [lanes.pi]
@@ -64,6 +63,7 @@ model_flag = ["-m"]
 resume = ["--resume"]
 tools_allow_flag = "--allowedTools"
 tools_deny_flag = "--disallowed-tools"
+claim_flag = "--agent"   # sitting head (`builder-minaret` → builder) when ~/.grok/agents/<word>.md exists
 
 [[harness]]
 id = "agy"

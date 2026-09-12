@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -10,12 +11,17 @@ import herdmark as hm  # noqa: E402
 CAT = {
     "defaults": {"lane": "yellow"},
     "lanes": {"claude": {"green": ["--permission-mode", "plan"], "yellow": ["--permission-mode", "acceptEdits"]},
+              "grok": {"green": ["--permission-mode", "plan"], "yellow": ["--permission-mode", "acceptEdits"],
+                       "red": ["--always-approve"]},
               "pi": {"green": ["--tools", "read"]}},
     "harness": [
         {"id": "claude", "kind": "claude", "family": "claude", "egress": "vendor", "trust_tool": "claude",
          "models": ["claude-sonnet-5", "claude-opus-5"], "model_flag": ["--model"], "resume": ["--resume"],
          "tools_allow_flag": "--allowedTools", "tools_deny_flag": "--disallowedTools",
          "seat_flag": "--append-system-prompt-file"},
+        {"id": "grok", "kind": "grok", "family": "grok", "egress": "vendor", "trust_tool": "grok",
+         "models": [], "model_flag": ["-m"], "resume": ["--resume"], "claim_flag": "--agent",
+         "tools_allow_flag": "--allowedTools", "tools_deny_flag": "--disallowed-tools"},
         {"id": "codex", "kind": "codex", "family": "codex", "egress": "vendor", "trust_tool": "codex",
          "models": [], "resume": ["resume"]},
         {"id": "omp", "kind": "omp", "family": "omp", "egress": "vendor", "trust_tool": "omp",
@@ -114,7 +120,7 @@ class Registry(unittest.TestCase):
         self.assertEqual(cold["kimi-notes"]["status"], "unknown")   # pane exists, no detected agent
         self.assertEqual(cold["old-codex"]["status"], "cold")
         absent = {a["harness"]: a for a in reg["absent"]}
-        self.assertEqual(set(absent), {"omp", "local-ornith"})
+        self.assertEqual(set(absent), {"omp", "local-ornith", "grok"})
         self.assertEqual(absent["local-ornith"]["trust"]["verdict"], "blocked")
         self.assertFalse(absent["local-ornith"]["installed"])
 
@@ -125,6 +131,13 @@ class Registry(unittest.TestCase):
                        "omp ↑ok", "[g] widen", "subject: internal"):
             self.assertIn(needle, text)
         self.assertNotIn("sysadmin", text)
+
+    def test_live_name_prefers_tab_label(self):
+        agents = [agent("w1:p1", "grok", ROOT, "idle", "- Inspect flags - Grok 4.6 - grok")]
+        agents[0]["tab_id"] = "w1:t9"
+        reg = hm.build_registry(CAT, ROOT, agents, [{"pane_id": "w1:p1"}], [],
+                                matcher=self.matcher, tab_label={"w1:t9": "coord-herdmark"})
+        self.assertEqual(reg["live"][0]["name"], "coord-herdmark")
 
     def test_empty_root(self):
         reg = hm.build_registry(CAT, "/nowhere", [], [], [], matcher=self.matcher)
@@ -195,6 +208,92 @@ class Flags(unittest.TestCase):
         opts, pos = hm.parse_flags(["--harness", "claude", "--lane=green", "--yes", "extra", "--", "--raw"])
         self.assertEqual(opts, {"harness": "claude", "lane": "green", "yes": True})
         self.assertEqual(pos, ["extra", "--raw"])
+
+
+class Sitting(unittest.TestCase):
+    def test_head(self):
+        self.assertEqual(hm.sitting_head("builder-minaret"), "builder")
+        self.assertEqual(hm.sitting_head("Majordomo"), "majordomo")
+        self.assertEqual(hm.sitting_head("coord-herdmark"), "coord")
+
+    def test_grok_claim_only_when_defined(self):
+        h = hm.harness_by_id(CAT, "grok")
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "builder.md").write_text("x")
+            self.assertEqual(hm.claim_argv(h, "builder-minaret", agents_dir=d), ["--agent", "builder"])
+            self.assertEqual(hm.claim_argv(h, "career", agents_dir=d), [])  # no career.md
+        self.assertEqual(hm.claim_argv(hm.harness_by_id(CAT, "claude"), "builder-minaret"), [])
+
+    def test_grok_argv_lane_and_claim(self):
+        h = hm.harness_by_id(CAT, "grok")
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "builder.md").write_text("x")
+            argv = hm.build_argv(CAT, h, lane="yellow", sitting="builder-minaret", agents_dir=d)
+        self.assertEqual(argv, ["--permission-mode", "acceptEdits", "--agent", "builder"])
+
+    def test_shell_ready_single_zsh(self):
+        two = {"process_info": {"foreground_processes": [
+            {"name": "zsh"}, {"name": "zsh"}]}}
+        one = {"process_info": {"foreground_processes": [{"name": "zsh"}]}}
+        grok = {"process_info": {"foreground_processes": [{"name": "grok"}]}}
+        self.assertFalse(hm.shell_ready_from_process(two))
+        self.assertTrue(hm.shell_ready_from_process(one))
+        self.assertFalse(hm.shell_ready_from_process(grok))
+
+    def test_live_names_are_tab_labels_not_titles(self):
+        snap = {
+            "tabs": [{"tab_id": "w1:t1", "label": "builder-minaret"},
+                     {"tab_id": "w1:t2", "label": "herdmark"}],
+            "agents": [
+                {"pane_id": "w1:p1", "tab_id": "w1:t1",
+                 "terminal_title_stripped": "- Inspect grok flags - Grok 4.6 - herdmark-core - grok"},
+                {"pane_id": "w1:p2", "tab_id": "w1:t2",
+                 "terminal_title_stripped": "herdmark-core"},
+            ],
+        }
+        self.assertEqual(hm.live_names(snap), {"builder-minaret", "herdmark"})
+
+
+class OpenCtx(unittest.TestCase):
+    def test_strips_to_caller_keys_and_fills_herdr_env(self):
+        env = {
+            "HERDR_PLUGIN_CONTEXT_JSON": json.dumps({
+                "workspace_id": "wY", "focused_pane_id": "wY:pA",
+                "focused_pane_cwd": "/tmp/proj", "selected_text": "noise",
+            }),
+        }
+        ctx = hm.invocation_ctx(env)
+        self.assertEqual(ctx["workspace_id"], "wY")
+        self.assertEqual(ctx["focused_pane_cwd"], "/tmp/proj")
+        self.assertNotIn("selected_text", ctx)
+        args = hm.picker_open_args(ctx)
+        self.assertIn("--cwd", args)
+        self.assertEqual(args[args.index("--cwd") + 1], "/tmp/proj")
+        self.assertIn("HERDMARK_CTX=" + json.dumps(ctx), args)
+
+    def test_cli_herdr_env_without_plugin_json(self):
+        ctx = hm.invocation_ctx({
+            "HERDR_WORKSPACE_ID": "w1", "HERDR_TAB_ID": "w1:t1",
+            "HERDR_PANE_ID": "w1:p1", "HERDR_PLUGIN_CONTEXT_JSON": "",
+        })
+        self.assertEqual(ctx["workspace_id"], "w1")
+        self.assertEqual(ctx["focused_pane_id"], "w1:p1")
+        # no pane get: cwd hole is left empty (picker --cwd omitted)
+        self.assertNotIn("focused_pane_cwd", ctx)
+        self.assertNotIn("--cwd", hm.picker_open_args(ctx))
+
+
+class Seed(unittest.TestCase):
+    def test_grok_lanes_and_claim_flag(self):
+        import tomllib
+        seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
+        cat = tomllib.loads(seed.read_text())
+        grok = next(h for h in cat["harness"] if h["id"] == "grok")
+        self.assertEqual(grok.get("claim_flag"), "--agent")
+        self.assertEqual(cat["lanes"]["grok"]["green"], ["--permission-mode", "plan"])
+        self.assertEqual(cat["lanes"]["grok"]["yellow"], ["--permission-mode", "acceptEdits"])
 
 
 if __name__ == "__main__":

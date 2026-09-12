@@ -78,14 +78,23 @@ python ≥ 3.11 (tomllib). macOS `/usr/bin/python3` is 3.9 and must not run this
 
 1. Scope = the caller's cwd (realpath). A pane *above* it never counts.
 2. Trust gate: `agent-deck-trust match <trust_tool> <cwd>`.
-3. `herdr tab create --workspace <caller ws> --cwd <cwd> --label <name> --no-focus`.
-4. Native kinds: `herdr agent start <name> --kind <kind> --pane <id> -- <argv>`
-   so the sidebar reports working / blocked / idle. House wrappers
-   (`oll-*`, `local-*`, `wk-*`, `bt-*`): `herdr pane run <id> "<wrapper> …"`.
+3. `herdr tab create --workspace <caller ws> --cwd <cwd> --label <sitting> --no-focus`.
+   The **tab label is the sitting** (sidebar identity). herdmark never
+   `--title`s or pane-renames a pane to carry identity — Grok's terminal title
+   is the prompt; Claude's is whatever `/rename` last set.
+4. Native kinds: `herdr agent start <sitting> --kind <kind> --pane <id> -- <argv>`
+   so herdr detects the process and the sidebar reports working / blocked / idle.
+   Grok also gets `--agent <sitting-head>` when `~/.grok/agents/<head>.md` exists
+   (`builder-minaret` → `builder`). House wrappers (`oll-*`, `local-*`, `wk-*`,
+   `bt-*`): `herdr pane run <id> "<wrapper> …"`.
 5. Roster row written; tab focused.
 
-Agent names must match `[a-z][a-z0-9_-]{0,31}` and be unique among live
-agents; herdmark defaults to `<harness>-<dirname>` and suffixes `-2`, `-3`.
+Sitting names must match `[a-z][a-z0-9_-]{0,31}` and be unique among live
+tabs; the default is the harness id (`grok`, `claude`) with `-2`, `-3` suffixes.
+`--name` is the sitting / tab label.
+
+A fresh Claude in a never-trusted directory will sit `blocked` at Claude's own
+"trust this folder" prompt. That is not herdmark's gate.
 
 ## Lineage
 
