@@ -7,24 +7,29 @@ Press the new-tab key in a directory and herdmark answers three questions
 before anything is created: **what is raised here** (live agents whose cwd is
 this directory or below), **what is cold here** (harnesses with a resumable
 session), and **what is absent** (every harness the constitution allows,
-with its trust verdict for this path). Then: attach to an established harness,
-or raise a new one with the model, lane, tools, and seat chosen on purpose.
+with its trust verdict for this path). A number attaches or raises with
+defaults; `[w]` is the long wizard (model, lane).
 
 ```
 herdmark  ~/code/notes/nomogenesis   subject: internal
   git root: ~/code/notes   (4 live under it)   [g] widen
 
-  LIVE HERE
-    1  nomogenesis-claude       claude         idle      w11:p3   2be9e58c  ~/code/notes/nomogenesis
+  LIVE
+    1  nomogenesis-claude     claude       idle     w11:p3
 
-  COLD HERE (resumable)
-    2  kimi-ballots             oll-mid        cold      —        k2f1a9d0  ~/code/notes/nomogenesis
+  COLD
+    2  kimi-ballots           oll-mid      cold     —
 
-  ABSENT HERE  (glyph: ⌂ local  ↑ vendor · verdict: ok  ! overprivilege  ⊘ blocked  ? unknown)
-  grok ↑! · agy ↑ok · pi ↑ok · local-ornith ⌂ok · local-penlight ⌂ok · oll-light ↑ok · oll-heavy ↑ok · …
+  RAISE  (yellow · sitting asked once)
+    3  grok                   ↑!
+    4  agy                    ↑ok
+    5  oll-mid                ↑ok
+    ⊘  local-ornith
 
-  [n] new harness   [a] adopt focused pane   [l] all seats   [g] widen to git root   [r] refresh   [q] quit
+  number = attach or raise   [w] wizard   [a] adopt   [g] widen   [q]
 ```
+
+Bare `herdmark` still prints the long registry (session ids, cwd, the absent line). `prefix+c` is the short list: a number attaches or raises, and the popup closes.
 
 ## Vocabulary
 

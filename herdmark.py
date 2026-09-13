@@ -524,6 +524,56 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
     return "\n".join(out)
 
 
+def picker_choices(reg: dict) -> list[dict]:
+    """Popup rows: live, cold, then raiseable absent (installed and not blocked)."""
+    out: list[dict] = []
+    for r in reg["live"]:
+        tag = "" if r.get("on_roster") else "  (not on roster)"
+        out.append({"action": "focus", "target": r,
+                    "line": f"{r['name']:<22} {r['harness']:<12} {r['status']:<8} {r['pane_id']}{tag}"})
+    for r in reg["cold"]:
+        out.append({"action": "enter", "target": r,
+                    "line": f"{r['name']:<22} {r.get('harness') or r.get('kind') or '':<12} {r['status']:<8} {r.get('pane_id') or DASH}"})
+    for a in reg["absent"]:
+        if not a.get("installed") or a.get("trust", {}).get("verdict") == "blocked":
+            continue
+        mark = GLYPH.get(a["egress"], "?") + verdict_mark(a["trust"])
+        out.append({"action": "raise", "target": a, "line": f"{a['harness']:<22} {mark}"})
+    return out
+
+
+def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wider: int | None = None) -> str:
+    """New-tab surface: one numbered list, then it should close."""
+    out = [f"herdmark  {tilde(reg['root'])}   subject: {reg['subject'] or '?'}"]
+    if git_top and os.path.realpath(git_top) != os.path.realpath(reg["root"]):
+        hint = f"   ({wider} live under it)" if wider is not None else ""
+        out.append(f"  git root: {tilde(git_top)}{hint}   [g] widen")
+    n = 0
+    sections = (("focus", "LIVE"), ("enter", "COLD"),
+                ("raise", "RAISE  (yellow · sitting asked once)"))
+    for action, title in sections:
+        rows = [c for c in choices if c["action"] == action]
+        if not rows:
+            continue
+        out.append("")
+        out.append(f"  {title}")
+        for c in rows:
+            n += 1
+            c["idx"] = n
+            out.append(f"  {n:>3}  {c['line']}")
+    blocked = [a["harness"] for a in reg["absent"]
+               if a.get("trust", {}).get("verdict") == "blocked"]
+    missing = [a["harness"] for a in reg["absent"]
+               if not a.get("installed") and a.get("trust", {}).get("verdict") != "blocked"]
+    if blocked or missing:
+        out.append("")
+        if blocked:
+            out.append("  ⊘  " + " · ".join(blocked))
+        if missing:
+            out.append("     not installed: " + " · ".join(missing))
+    return "\n".join(out)
+
+
 # --- launch --------------------------------------------------------------------
 
 def claim_argv(h: dict, sitting: str, agents_dir: Path | None = None) -> list[str]:
@@ -1013,15 +1063,9 @@ def ask(prompt: str, default: str = "") -> str:
 
 
 def choose(title: str, items: list[str], default: int = 0) -> int | None:
-    """Numbered choice; fzf when present. Returns index or None on cancel."""
+    """Numbered choice. No fzf: --height=100% ate the popup."""
     if not items:
         return None
-    if shutil.which("fzf") and len(items) > 1:
-        proc = subprocess.run(["fzf", f"--prompt={title}> ", "--height=100%", "--reverse", "--info=inline", "--with-nth=2.."],
-                              input="\n".join(f"{i} {s}" for i, s in enumerate(items)) + "\n", capture_output=True, text=True)
-        if proc.returncode != 0 or not proc.stdout.strip():
-            return None
-        return int(proc.stdout.split()[0])
     print(f"  {title}")
     for i, s in enumerate(items):
         print(f"  {i + 1:>3}  {s}{'   (default)' if i == default else ''}")
@@ -1035,7 +1079,7 @@ def choose(title: str, items: list[str], default: int = 0) -> int | None:
     return i if 0 <= i < len(items) else None
 
 
-def wizard(ctx: Ctx, cat: dict, root: str) -> None:
+def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
     hs = [h for h in cat.get("harness", [])]
     subject = trust_subject(root)
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -1048,13 +1092,13 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> None:
     print(f"\n  raise a harness in {tilde(root)}   subject: {subject}")
     i = choose("harness", rows)
     if i is None:
-        return
+        return False
     h = hs[i]
     if not installed(h):
-        print(f"  {h['id']} is not installed here"); return
+        print(f"  {h['id']} is not installed here"); return False
     v = verdicts[h["id"]]
     if v["verdict"] == "blocked":
-        print(f"  ⊘ refused: {h['id']} on {tilde(root)} is blocked {v['flag']} (T4 under-clearance)"); return
+        print(f"  ⊘ refused: {h['id']} on {tilde(root)} is blocked {v['flag']} (T4 under-clearance)"); return False
     taken = live_names() | {r["name"] for r in load_roster()}
     base = unique_name(slug(h["id"]), taken)
     name = slug(ask(f"  sitting (tab name) [{base}]: ", base))
@@ -1063,7 +1107,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> None:
     if h["models"]:
         j = choose("model", h["models"] + ["(type another)"])
         if j is None:
-            return
+            return False
         model = h["models"][j] if j < len(h["models"]) else ask("  model id: ")
     lane = ""
     if not is_wrapper(h):
@@ -1071,74 +1115,104 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> None:
         lane_rows = [f"{ln:<7} {' '.join(cat['lanes'].get(h['kind'], {}).get(ln, [])) or '(kind default)'}" for ln in LANES]
         j = choose("lane", lane_rows, default=LANES.index(default_lane) if default_lane in LANES else 1)
         if j is None:
-            return
+            return False
         lane = LANES[j]
-    allow = deny = ""
-    if h.get("tools_allow_flag") or h.get("tools_deny_flag"):
-        allow = ask("  allowed tools (comma-separated, empty = kind default): ")
-        if h.get("tools_deny_flag"):
-            deny = ask("  denied tools (comma-separated, empty = none): ")
     seat = seat_file(root) if h.get("seat_flag") else None
-    if seat and ask(f"  inject seat {tilde(str(seat))}? [Y/n] ", "y").lower().startswith("n"):
-        seat = None
     if v["verdict"] == "overprivilege":
         if ask(f"  ! overprivilege {v['flag']}: {h['id']} exceeds what {subject} work warrants. proceed? [y/N] ").lower() != "y":
-            return
-    argv = build_argv(cat, h, model, lane, allow, deny, seat, sitting=name)
+            return False
+    argv = build_argv(cat, h, model, lane, "", "", seat, sitting=name)
     shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
     print(f"\n  {name}  →  {shown}\n  new tab named {name} in {tilde(root)}")
-    if ask("  raise? [Y/n] ", "y").lower().startswith("n"):
-        return
-    pane = raise_harness(cat, h, name, root, ctx, model, lane, allow, deny, seat)
+    pane = raise_harness(cat, h, name, root, ctx, model, lane, "", "", seat)
     print(f"  raised {name} in {pane['pane_id']}")
+    return True
+
+
+def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
+    """Numbered RAISE: defaults, one sitting prompt, then close."""
+    h = harness_by_id(cat, hid)
+    if not h:
+        print(f"  unknown harness {hid}"); return False
+    if not installed(h):
+        print(f"  {hid} is not installed here"); return False
+    v = trust_match(h["trust_tool"], root)
+    if v["verdict"] == "blocked":
+        print(f"  ⊘ refused: {hid} on {tilde(root)} is blocked {v['flag']}"); return False
+    taken = live_names() | {r["name"] for r in load_roster()}
+    base = unique_name(slug(h["id"]), taken)
+    lane = "" if is_wrapper(h) else cat["defaults"].get("lane", "yellow")
+    print(f"  {h['id']}{(' ' + lane) if lane else ''}  →  new tab in {tilde(root)}")
+    raw = ask(f"  sitting (tab name) [{base}]  (q = cancel): ", base)
+    if raw.lower() == "q":
+        return False
+    name = unique_name(slug(raw), taken)
+    if v["verdict"] == "overprivilege":
+        if ask(f"  ! overprivilege {v['flag']}: proceed? [y/N] ").lower() != "y":
+            return False
+    model = h["models"][0] if h["models"] else ""
+    seat = seat_file(root) if h.get("seat_flag") else None
+    pane = raise_harness(cat, h, name, root, ctx, model, lane, "", "", seat)
+    print(f"  raised {name} in {pane['pane_id']}")
+    return True
 
 
 def picker(ctx: Ctx, cat: dict) -> int:
     root = ctx.cwd
     while True:
+        rows = load_roster()
+        refresh_sessions(rows)
+        agents, panes = live_agents(), live_panes()
+        top = git_root(root)
+        wider = None
+        if top and os.path.realpath(top) != os.path.realpath(root):
+            wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
+        reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
+                             tab_label=tab_labels())
+        choices = picker_choices(reg)
         print()
-        reg = cmd_registry(ctx, cat, root)
+        print(render_picker(reg, choices, top, wider))
         print()
-        print("  [n] new harness   [a] adopt focused pane   [l] all seats   [g] widen to git root   [r] refresh   [q] quit")
-        raw = ask("  > ").lower()
+        print("  number = attach or raise   [w] wizard   [a] adopt   [g] widen   [q]")
+        raw = ask("  > ").strip().lower()
         if raw in ("", "q"):
             return 0
         if raw == "r":
             continue
         if raw == "g":
-            top = git_root(root)
             if top:
                 root = top
             continue
-        if raw == "n":
+        if raw in ("w", "n"):  # n = old "new harness" key
             try:
-                wizard(ctx, cat, root)
+                if wizard(ctx, cat, root):
+                    return 0
             except (HerdrError, SystemExit) as e:
                 print(f"  {e}")
-            ask("  enter to continue ")
             continue
         if raw == "a":
             try:
                 cmd_adopt(ctx, cat)
+                return 0
             except (HerdrError, SystemExit) as e:
                 print(f"  {e}")
             continue
-        if raw == "l":
-            cmd_list(ctx, True); ask("  enter to continue "); continue
         if raw.isdigit():
-            n = int(raw)
-            rows = reg["live"] + reg["cold"]
-            hit = next((r for r in rows if r.get("idx") == n), None)
+            hit = next((c for c in choices if c.get("idx") == int(raw)), None)
             if not hit:
                 continue
             try:
-                if hit in reg["live"]:
-                    herdr("agent", "focus", hit["pane_id"])
+                if hit["action"] == "focus":
+                    herdr("agent", "focus", hit["target"]["pane_id"])
                     return 0
-                cmd_enter(ctx, cat, hit["name"], root)
-                return 0
+                if hit["action"] == "enter":
+                    cmd_enter(ctx, cat, hit["target"]["name"], root)
+                    return 0
+                if hit["action"] == "raise":
+                    if raise_quick(ctx, cat, hit["target"]["harness"], root):
+                        return 0
             except (HerdrError, SystemExit) as e:
-                print(f"  {e}"); ask("  enter to continue ")
+                print(f"  {e}")
 
 
 def cmd_open(env=None) -> int:

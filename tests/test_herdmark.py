@@ -203,6 +203,36 @@ class Keys(unittest.TestCase):
         self.assertEqual(parsed["keys"]["command"][0]["key"], "prefix+c")
 
 
+class PickerList(unittest.TestCase):
+    def test_raiseable_skips_blocked_and_missing(self):
+        reg = {
+            "root": ROOT, "subject": "internal",
+            "live": [{"name": "majordomo", "harness": "claude", "status": "idle",
+                      "pane_id": "w1:p1", "on_roster": True}],
+            "cold": [{"name": "kimi-notes", "harness": "oll-mid", "status": "cold",
+                      "pane_id": None, "kind": "pi"}],
+            "absent": [
+                {"harness": "grok", "kind": "grok", "egress": "vendor", "installed": True,
+                 "trust": {"verdict": "ok"}},
+                {"harness": "omp", "kind": "omp", "egress": "vendor", "installed": False,
+                 "trust": {"verdict": "ok"}},
+                {"harness": "local-ornith", "kind": "pi", "egress": "local", "installed": False,
+                 "trust": {"verdict": "blocked"}},
+            ],
+        }
+        choices = hm.picker_choices(reg)
+        self.assertEqual([c["action"] for c in choices], ["focus", "enter", "raise"])
+        self.assertEqual(choices[2]["target"]["harness"], "grok")
+        text = hm.render_picker(reg, choices)
+        self.assertIn("LIVE", text)
+        self.assertIn("COLD", text)
+        self.assertIn("RAISE", text)
+        self.assertIn("  3  grok", text)
+        self.assertIn("⊘  local-ornith", text)
+        self.assertIn("not installed: omp", text)
+        self.assertNotIn("local-ornith", [c["target"].get("harness") for c in choices if c["action"] == "raise"])
+
+
 class Flags(unittest.TestCase):
     def test_parse_flags(self):
         opts, pos = hm.parse_flags(["--harness", "claude", "--lane=green", "--yes", "extra", "--", "--raw"])
