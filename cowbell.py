@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""herdmark — registry-first harness roster for Herdr, scoped to the directory you are in.
+"""cowbell — call up a sitting here. Herdr plugin herdr-cowbell.
 
-  herdmark                      what is raised here (live · cold · absent), with trust
+  cowbell                       what is raised here (live · cold · absent), with trust
                                 (no args = this registry)
-  herdmark <harness>            attach to that harness here, or raise it with defaults
-  herdmark new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N]
-  herdmark enter <name>         focus if live, else resume in a new tab
-  herdmark adopt [name]         put the focused agent pane on the roster
-  herdmark stop <name>          ctrl-c the harness; roster keeps it
-  herdmark list [--all]         roster rows (default: this directory)
-  herdmark import-seats         pull herdr-seats' seats.json into the roster
-  herdmark keys install|uninstall
-  herdmark open | picker        plugin entry points (keybind / popup)
+  cowbell <harness>             attach to that harness here, or raise it with defaults
+  cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N]
+  cowbell enter <name>          focus if live, else resume in a new tab
+  cowbell adopt [name]          put the focused agent pane on the roster
+  cowbell stop <name>           ctrl-c the harness; roster keeps it
+  cowbell list [--all]          roster rows (default: this directory)
+  cowbell import-seats          pull herdr-seats' seats.json into the roster
+  cowbell keys install|uninstall
+  cowbell open | picker         plugin entry points (keybind / popup)
 
 Stdlib only; python >= 3.11 (tomllib). fzf is optional.
 """
@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-PLUGIN_ID = "herdmark"
+PLUGIN_ID = "herdr-cowbell"
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 LANES = ("green", "yellow", "red")
 READY = {"idle", "done"}
@@ -125,7 +125,7 @@ def server_up() -> bool:
 # --- context -------------------------------------------------------------------
 
 class Ctx:
-    """Where herdmark was invoked from: the caller's pane, tab, workspace, cwd."""
+    """Where cowbell was invoked from: the caller's pane, tab, workspace, cwd."""
 
     def __init__(self, workspace_id=None, tab_id=None, pane_id=None, cwd=None, agent=None, mode="tab"):
         self.workspace_id, self.tab_id, self.pane_id = workspace_id, tab_id, pane_id
@@ -135,7 +135,7 @@ class Ctx:
     @classmethod
     def from_env(cls, env=None) -> "Ctx":
         env = os.environ if env is None else env
-        raw = env.get("HERDMARK_CTX") or env.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}"
+        raw = env.get("COWBELL_CTX") or env.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}"
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -155,14 +155,14 @@ class Ctx:
             pane_id=pane_id,
             cwd=os.path.realpath(cwd or os.getcwd()),
             agent=data.get("focused_pane_agent"),
-            mode=env.get("HERDMARK_MODE") or "tab",
+            mode=env.get("COWBELL_MODE") or "tab",
         )
 
 
 def invocation_ctx(env=None) -> dict:
     """The caller's directory and workspace — not the picker popup's own pane."""
     env = os.environ if env is None else env
-    raw = env.get("HERDR_PLUGIN_CONTEXT_JSON") or env.get("HERDMARK_CTX") or "{}"
+    raw = env.get("HERDR_PLUGIN_CONTEXT_JSON") or env.get("COWBELL_CTX") or "{}"
     try:
         parsed = json.loads(raw)
         data = parsed if isinstance(parsed, dict) else {}
@@ -191,8 +191,8 @@ def invocation_ctx(env=None) -> dict:
 def picker_open_args(ctx: dict) -> list[str]:
     args = [
         "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "picker", "--focus",
-        "--env", "HERDMARK_CTX=" + json.dumps(ctx),
-        "--env", "HERDMARK_MODE=tab",
+        "--env", "COWBELL_CTX=" + json.dumps(ctx),
+        "--env", "COWBELL_MODE=tab",
     ]
     if ctx.get("focused_pane_cwd"):
         args += ["--cwd", ctx["focused_pane_cwd"]]
@@ -260,10 +260,10 @@ def unique_name(base: str, taken: set[str]) -> str:
 
 def load_catalog() -> dict:
     if tomllib is None:
-        raise SystemExit("herdmark: python >= 3.11 required (tomllib)")
+        raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
     p = catalog_path()
     if not p.exists():
-        raise SystemExit(f"herdmark: no catalog at {p}")
+        raise SystemExit(f"cowbell: no catalog at {p}")
     with open(p, "rb") as fh:
         cat = tomllib.load(fh)
     cat.setdefault("defaults", {})
@@ -480,7 +480,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
 
 
 def render_registry(reg: dict, git_top: str | None = None, wider: int | None = None) -> str:
-    out = [f"herdmark  {tilde(reg['root'])}   subject: {reg['subject'] or '?'}"]
+    out = [f"cowbell  {tilde(reg['root'])}   subject: {reg['subject'] or '?'}"]
     if git_top and os.path.realpath(git_top) != os.path.realpath(reg["root"]):
         hint = f"   ({wider} live under it)" if wider is not None else ""
         out.append(f"  git root: {tilde(git_top)}{hint}   [g] widen")
@@ -544,7 +544,7 @@ def picker_choices(reg: dict) -> list[dict]:
 
 def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wider: int | None = None) -> str:
     """New-tab surface: one numbered list, then it should close."""
-    out = [f"herdmark  {tilde(reg['root'])}   subject: {reg['subject'] or '?'}"]
+    out = [f"cowbell  {tilde(reg['root'])}   subject: {reg['subject'] or '?'}"]
     if git_top and os.path.realpath(git_top) != os.path.realpath(reg["root"]):
         hint = f"   ({wider} live under it)" if wider is not None else ""
         out.append(f"  git root: {tilde(git_top)}{hint}   [g] widen")
@@ -803,7 +803,7 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
     rows = load_roster()
     hits = [r for r in rows if r["name"] == name] or [r for r in rows if name in r["name"]]
     if len(hits) != 1:
-        raise SystemExit(f"herdmark: {'no' if not hits else 'ambiguous'} roster entry {name!r}")
+        raise SystemExit(f"cowbell: {'no' if not hits else 'ambiguous'} roster entry {name!r}")
     r = hits[0]
     live = name_is_live(r["name"])
     if live and live.get("pane_id"):
@@ -817,7 +817,7 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
             return
     h = harness_by_id(cat, r.get("harness") or r.get("kind") or "")
     if not h:
-        raise SystemExit(f"herdmark: {r['name']} uses harness {r.get('harness')!r} which is not in the catalog")
+        raise SystemExit(f"cowbell: {r['name']} uses harness {r.get('harness')!r} which is not in the catalog")
     seat = Path(r["seat"]) if r.get("seat") and Path(r["seat"]).is_file() else None
     pane = raise_harness(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""), r.get("lane", ""),
                          r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""))
@@ -830,12 +830,12 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None) -> None:
         focused = [a for a in live_agents() if a.get("focused")]
         pane_id = focused[0]["pane_id"] if focused else None
     if not pane_id:
-        raise SystemExit("herdmark: no focused pane to adopt")
+        raise SystemExit("cowbell: no focused pane to adopt")
     info = herdr("agent", "get", pane_id)
     a = info.get("agent") or info
     kind = a.get("agent") or ""
     if not kind:
-        raise SystemExit(f"herdmark: pane {pane_id} hosts no recognized agent")
+        raise SystemExit(f"cowbell: pane {pane_id} hosts no recognized agent")
     sitting = tab_labels().get(a.get("tab_id"), "")
     title = a.get("terminal_title_stripped") or ""
     noisy = (not title or title.startswith("-") or " - grok " in title.lower()
@@ -859,11 +859,11 @@ def cmd_stop(name: str) -> None:
     rows = load_roster()
     hits = [r for r in rows if r["name"] == name]
     if not hits:
-        raise SystemExit(f"herdmark: no roster entry {name!r}")
+        raise SystemExit(f"cowbell: no roster entry {name!r}")
     live = name_is_live(name) or {}
     pid = live.get("pane_id") or hits[0].get("pane_id")
     if not pid:
-        raise SystemExit(f"herdmark: {name} is not live")
+        raise SystemExit(f"cowbell: {name} is not live")
     herdr("agent", "send-keys", pid, "ctrl+c")
     print(f"ctrl+c → {name} ({pid})")
 
@@ -887,14 +887,14 @@ def cmd_list(ctx: Ctx, all_rows: bool) -> None:
 def gate(cat_h: dict, root: str, interactive: bool, assume_yes: bool) -> dict:
     v = trust_match(cat_h["trust_tool"], root)
     if v["verdict"] == "blocked":
-        raise SystemExit(f"herdmark: refused — {cat_h['id']} on {tilde(root)}: blocked {v['flag']} (T4 under-clearance)")
+        raise SystemExit(f"cowbell: refused — {cat_h['id']} on {tilde(root)}: blocked {v['flag']} (T4 under-clearance)")
     if v["verdict"] == "overprivilege":
         msg = f"{cat_h['id']} on {tilde(root)}: overprivilege {v['flag']} (surface exceeds subject; visible, not silent)"
         if interactive and not assume_yes:
             if input(f"  ! {msg}\n  proceed? [y/N] ").strip().lower() != "y":
-                raise SystemExit("herdmark: not raised")
+                raise SystemExit("cowbell: not raised")
         else:
-            print(f"herdmark: ! {msg}", file=sys.stderr)
+            print(f"cowbell: ! {msg}", file=sys.stderr)
     return v
 
 
@@ -903,12 +903,12 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     root = root or ctx.cwd
     h = harness_by_id(cat, hid)
     if not h:
-        raise SystemExit(f"herdmark: unknown harness {hid!r} (see: herdmark catalog)")
+        raise SystemExit(f"cowbell: unknown harness {hid!r} (see: cowbell catalog)")
     if not installed(h):
-        raise SystemExit(f"herdmark: {hid} is not installed here ({h.get('command') or h['kind']})")
+        raise SystemExit(f"cowbell: {hid} is not installed here ({h.get('command') or h['kind']})")
     lane = lane or ("" if is_wrapper(h) else cat["defaults"].get("lane", "yellow"))
     if lane and lane not in LANES:
-        raise SystemExit(f"herdmark: lane must be one of {', '.join(LANES)}")
+        raise SystemExit(f"cowbell: lane must be one of {', '.join(LANES)}")
     model = model or (h["models"][0] if h["models"] else "")
     seat = None if (no_seat or not h.get("seat_flag")) else seat_file(root)
     gate(h, root, interactive=False, assume_yes=assume_yes)
@@ -919,7 +919,7 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
 
 
 def cmd_dispatch(ctx: Ctx, cat: dict, hid: str, assume_yes: bool) -> None:
-    """`herdmark claude`: attach to that harness here if one exists, else raise it with defaults."""
+    """`cowbell claude`: attach to that harness here if one exists, else raise it with defaults."""
     root = ctx.cwd
     reg = build_registry(cat, root, live_agents(), live_panes(), load_roster(), matcher=lambda _tool: {"verdict": "unknown"})
     for r in reg["live"]:
@@ -943,27 +943,29 @@ def cmd_catalog(cat: dict) -> None:
 
 # --- keybinding install (text-level, atomic, reversible) ---------------------------------
 
-MARK = "# herdmark"
-BLOCK_BEGIN, BLOCK_END = "# >>> herdmark keybindings >>>", "# <<< herdmark keybindings <<<"
-SAVED = "# herdmark saved: "
+MARK = "# cowbell"
+BLOCK_BEGIN, BLOCK_END = "# >>> herdr-cowbell keybindings >>>", "# <<< herdr-cowbell keybindings <<<"
+SAVED = "# cowbell saved: "
 BLOCK = [
     BLOCK_BEGIN,
     "[[keys.command]]",
     'key = "prefix+c"',
     'type = "plugin_action"',
-    'command = "herdmark.open"',
-    'description = "herdmark: new tab from the herd registry"',
+    'command = "herdr-cowbell.open"',
+    'description = "cowbell: new tab from the herd registry"',
     BLOCK_END,
 ]
 
 
 def _strip_block(lines: list[str]) -> list[str]:
     out, inside = [], False
+    begins = {BLOCK_BEGIN, "# >>> herdmark keybindings >>>"}
+    ends = {BLOCK_END, "# <<< herdmark keybindings <<<"}
     for ln in lines:
         s = ln.strip()
-        if s == BLOCK_BEGIN:
+        if s in begins:
             inside = True; continue
-        if s == BLOCK_END:
+        if s in ends:
             inside = False; continue
         if not inside:
             out.append(ln)
@@ -971,12 +973,16 @@ def _strip_block(lines: list[str]) -> list[str]:
 
 
 def keys_install_text(text: str) -> str:
-    """Blank the built-in new_tab (saving the original) and bind prefix+c to herdmark.open."""
+    """Blank the built-in new_tab (saving the original) and bind prefix+c to herdr-cowbell.open."""
     lines = _strip_block(text.splitlines())
-    lines = [ln for ln in lines if not ln.rstrip().endswith(MARK)]
+    old_mark, old_saved = "# herdmark", "# herdmark saved: "
+    lines = [ln for ln in lines if not ln.rstrip().endswith(MARK) and not ln.rstrip().endswith(old_mark)]
     for i, ln in enumerate(lines):
-        if ln.strip().startswith(SAVED):
-            lines[i] = ln.strip()[len(SAVED):]
+        s = ln.strip()
+        if s.startswith(SAVED):
+            lines[i] = s[len(SAVED):]
+        elif s.startswith(old_saved):
+            lines[i] = s[len(old_saved):]
     managed = f'new_tab = ""  {MARK}'
     keys_at = next((i for i, ln in enumerate(lines) if ln.strip() == "[keys]"), None)
     if keys_at is None:
@@ -1007,7 +1013,9 @@ def keys_uninstall_text(text: str) -> str:
         s = ln.strip()
         if s.startswith(SAVED):
             out.append(s[len(SAVED):]); continue
-        if s.endswith(MARK):
+        if s.startswith("# herdmark saved: "):
+            out.append(s[len("# herdmark saved: "):]); continue
+        if s.endswith(MARK) or s.endswith("# herdmark"):
             continue
         out.append(ln)
     while out and not out[-1].strip():
@@ -1220,7 +1228,7 @@ def cmd_open(env=None) -> int:
     try:
         herdr(*picker_open_args(invocation_ctx(env)))
     except HerdrError as e:
-        print(f"herdmark: {e}", file=sys.stderr)
+        print(f"cowbell: {e}", file=sys.stderr)
         return 1
     return 0
 
@@ -1257,7 +1265,7 @@ def main(argv: list[str]) -> int:
     if cmd == "open":
         return cmd_open()
     if not server_up():
-        print("herdmark: no Herdr server (is `herdr` running?)", file=sys.stderr); return 2
+        print("cowbell: no Herdr server (is `herdr` running?)", file=sys.stderr); return 2
     ctx = Ctx.from_env()
     cat = load_catalog()
     opts, pos = parse_flags(rest)
@@ -1291,14 +1299,14 @@ def main(argv: list[str]) -> int:
         return 0
     if harness_by_id(cat, cmd):
         cmd_dispatch(ctx, cat, cmd, bool(opts.get("yes"))); return 0
-    raise SystemExit(f"herdmark: unknown command or harness {cmd!r} (see: herdmark catalog)")
+    raise SystemExit(f"cowbell: unknown command or harness {cmd!r} (see: cowbell catalog)")
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv[1:]))
     except HerdrError as e:
-        print(f"herdmark: {e}", file=sys.stderr)
+        print(f"cowbell: {e}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(130)

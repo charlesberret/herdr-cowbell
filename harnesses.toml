@@ -1,8 +1,8 @@
-# herdmark — the constitution of the herd.
+# cowbell — the constitution of the herd.
 #
 # A harness is a way of raising an agent: which executable, which model, which
 # lane (write/bash knobs), which tools, and which trust surface it answers to.
-# herdmark reads this file to know what *may* be raised in a directory; the
+# cowbell reads this file to know what *may* be raised in a directory; the
 # roster (state dir, roster.json) records what *has* been raised and where.
 #
 # Edit freely. This is the copy in your plugin config dir; the plugin root

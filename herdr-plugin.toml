@@ -1,43 +1,43 @@
-id = "herdmark"
-name = "herdmark"
+id = "herdr-cowbell"
+name = "cowbell"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
-description = "Registry-first harness roster for Herdr: what is running in this directory, by kind; attach to an established harness, or raise a new one with the model, lane, and tools chosen on purpose."
+description = "Call up a sitting here. Per-directory herd registry (live / cold / absent, with trust) behind the new-tab key: attach to an established harness, or raise one with model, lane and tools chosen on purpose."
 platforms = ["linux", "macos"]
 
-# Every command starts with "./bin/herdmark": [[panes]] commands are resolved
+# Every command starts with "./bin/cowbell": [[panes]] commands are resolved
 # by PATH lookup, not relative to the plugin root, so a bare "bin/..." fails
 # with plugin_pane_open_failed. The shim picks a python >= 3.11 (tomllib);
 # macOS /usr/bin/python3 is 3.9 and must never be the one that runs this.
 
 [[actions]]
 id = "open"
-title = "herdmark: registry for this directory"
+title = "cowbell: registry for this directory"
 contexts = ["global"]
-command = ["./bin/herdmark", "open"]
+command = ["./bin/cowbell", "open"]
 
 [[actions]]
 id = "adopt"
-title = "herdmark: adopt the focused agent pane into the roster"
+title = "cowbell: adopt the focused agent pane into the roster"
 contexts = ["pane"]
-command = ["./bin/herdmark", "adopt"]
+command = ["./bin/cowbell", "adopt"]
 
 [[actions]]
 id = "install-keys"
-title = "herdmark: bind prefix+c (new tab) to the registry"
+title = "cowbell: bind prefix+c (new tab) to the registry"
 contexts = ["global"]
-command = ["./bin/herdmark", "keys", "install"]
+command = ["./bin/cowbell", "keys", "install"]
 
 [[actions]]
 id = "uninstall-keys"
-title = "herdmark: restore the built-in new-tab binding"
+title = "cowbell: restore the built-in new-tab binding"
 contexts = ["global"]
-command = ["./bin/herdmark", "keys", "uninstall"]
+command = ["./bin/cowbell", "keys", "uninstall"]
 
 [[panes]]
 id = "picker"
-title = "herdmark"
+title = "cowbell"
 placement = "popup"
 width = "64%"
 height = "56%"
-command = ["./bin/herdmark", "picker"]
+command = ["./bin/cowbell", "picker"]

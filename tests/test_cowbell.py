@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import herdmark as hm  # noqa: E402
+import cowbell as hm  # noqa: E402
 
 
 CAT = {
@@ -136,8 +136,8 @@ class Registry(unittest.TestCase):
         agents = [agent("w1:p1", "grok", ROOT, "idle", "- Inspect flags - Grok 4.6 - grok")]
         agents[0]["tab_id"] = "w1:t9"
         reg = hm.build_registry(CAT, ROOT, agents, [{"pane_id": "w1:p1"}], [],
-                                matcher=self.matcher, tab_label={"w1:t9": "coord-herdmark"})
-        self.assertEqual(reg["live"][0]["name"], "coord-herdmark")
+                                matcher=self.matcher, tab_label={"w1:t9": "coord-cowbell"})
+        self.assertEqual(reg["live"][0]["name"], "coord-cowbell")
 
     def test_empty_root(self):
         reg = hm.build_registry(CAT, "/nowhere", [], [], [], matcher=self.matcher)
@@ -177,13 +177,13 @@ class Keys(unittest.TestCase):
         self.assertEqual(once, hm.keys_install_text(once))
         keys_at = once.index("[keys]")
         self.assertLess(keys_at, once.index("[[keys.command]]"))         # TOML: table before array-of-tables
-        self.assertIn('new_tab = ""  # herdmark', once)
-        self.assertIn('command = "herdmark.open"', once)
+        self.assertIn('new_tab = ""  # cowbell', once)
+        self.assertIn('command = "herdr-cowbell.open"', once)
         self.assertIn("herdr-seats.picker", once)                        # existing binding untouched
         import tomllib
         parsed = tomllib.loads(once)
         self.assertEqual(parsed["keys"]["new_tab"], "")
-        self.assertEqual([c["command"] for c in parsed["keys"]["command"]], ["herdr-seats.picker", "herdmark.open"])
+        self.assertEqual([c["command"] for c in parsed["keys"]["command"]], ["herdr-seats.picker", "herdr-cowbell.open"])
 
     def test_uninstall_restores_original(self):
         self.assertEqual(hm.keys_uninstall_text(hm.keys_install_text(CHARLES_CONFIG)).strip(), CHARLES_CONFIG.strip())
@@ -191,8 +191,8 @@ class Keys(unittest.TestCase):
     def test_existing_new_tab_is_saved_and_restored(self):
         cfg = "[keys]\nnew_tab = \"prefix+t\"\nsplit = \"prefix+v\"\n"
         inst = hm.keys_install_text(cfg)
-        self.assertIn('# herdmark saved: new_tab = "prefix+t"', inst)
-        self.assertIn('new_tab = ""  # herdmark', inst)
+        self.assertIn('# cowbell saved: new_tab = "prefix+t"', inst)
+        self.assertIn('new_tab = ""  # cowbell', inst)
         self.assertEqual(hm.keys_uninstall_text(inst).strip(), cfg.strip())
 
     def test_empty_config(self):
@@ -244,7 +244,7 @@ class Sitting(unittest.TestCase):
     def test_head(self):
         self.assertEqual(hm.sitting_head("builder-minaret"), "builder")
         self.assertEqual(hm.sitting_head("Majordomo"), "majordomo")
-        self.assertEqual(hm.sitting_head("coord-herdmark"), "coord")
+        self.assertEqual(hm.sitting_head("coord-cowbell"), "coord")
 
     def test_grok_claim_only_when_defined(self):
         h = hm.harness_by_id(CAT, "grok")
@@ -275,15 +275,15 @@ class Sitting(unittest.TestCase):
     def test_live_names_are_tab_labels_not_titles(self):
         snap = {
             "tabs": [{"tab_id": "w1:t1", "label": "builder-minaret"},
-                     {"tab_id": "w1:t2", "label": "herdmark"}],
+                     {"tab_id": "w1:t2", "label": "cowbell"}],
             "agents": [
                 {"pane_id": "w1:p1", "tab_id": "w1:t1",
-                 "terminal_title_stripped": "- Inspect grok flags - Grok 4.6 - herdmark-core - grok"},
+                 "terminal_title_stripped": "- Inspect grok flags - Grok 4.6 - herdr-cowbell-core - grok"},
                 {"pane_id": "w1:p2", "tab_id": "w1:t2",
-                 "terminal_title_stripped": "herdmark-core"},
+                 "terminal_title_stripped": "herdr-cowbell-core"},
             ],
         }
-        self.assertEqual(hm.live_names(snap), {"builder-minaret", "herdmark"})
+        self.assertEqual(hm.live_names(snap), {"builder-minaret", "cowbell"})
 
 
 class OpenCtx(unittest.TestCase):
@@ -301,7 +301,7 @@ class OpenCtx(unittest.TestCase):
         args = hm.picker_open_args(ctx)
         self.assertIn("--cwd", args)
         self.assertEqual(args[args.index("--cwd") + 1], "/tmp/proj")
-        self.assertIn("HERDMARK_CTX=" + json.dumps(ctx), args)
+        self.assertIn("COWBELL_CTX=" + json.dumps(ctx), args)
 
     def test_cli_herdr_env_without_plugin_json(self):
         ctx = hm.invocation_ctx({

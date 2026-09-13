@@ -1,17 +1,21 @@
-# herdmark
+# cowbell
 
-Registry-first harness roster for [Herdr](https://herdr.dev), scoped to the
-directory you are in.
+Call up a sitting here. Herdr plugin **herdr-cowbell**, CLI **cowbell**.
 
-Press the new-tab key in a directory and herdmark answers three questions
-before anything is created: **what is raised here** (live agents whose cwd is
-this directory or below), **what is cold here** (harnesses with a resumable
+A cowbell is how a herder hears where each animal is (silence means one is
+missing) and rings to call them in. Per-directory herd registry behind the
+new-tab key: attach to an established harness, or raise one with the model,
+lane, and tools chosen on purpose.
+
+Press `prefix+c` in a directory and cowbell answers three questions before
+anything is created: **what is raised here** (live agents whose cwd is this
+directory or below), **what is cold here** (harnesses with a resumable
 session), and **what is absent** (every harness the constitution allows,
 with its trust verdict for this path). A number attaches or raises with
 defaults; `[w]` is the long wizard (model, lane).
 
 ```
-herdmark  ~/code/notes/nomogenesis   subject: internal
+cowbell  ~/code/notes/nomogenesis   subject: internal
   git root: ~/code/notes   (4 live under it)   [g] widen
 
   LIVE
@@ -29,7 +33,7 @@ herdmark  ~/code/notes/nomogenesis   subject: internal
   number = attach or raise   [w] wizard   [a] adopt   [g] widen   [q]
 ```
 
-Bare `herdmark` still prints the long registry (session ids, cwd, the absent line). `prefix+c` is the short list: a number attaches or raises, and the popup closes.
+Bare `cowbell` still prints the long registry (session ids, cwd, the absent line). `prefix+c` is the short list: a number attaches or raises, and the popup closes.
 
 ## Vocabulary
 
@@ -39,12 +43,12 @@ Bare `herdmark` still prints the long registry (session ids, cwd, the absent lin
 | **constitution** | The catalog of harnesses that *may* be raised — `harnesses.toml` in the plugin config dir. Hand-edited. |
 | **roster** | What *has* been raised and where — `roster.json` in the plugin state dir. Machine-written; one row per named harness with its cwd, session id, pane. |
 | **lane** | House shorthand for write/bash knobs (`green` / `yellow` / `red`), mapped to per-kind flags in the catalog. Not a trust model. |
-| **subject / verdict** | From `agent-deck-trust`: the sensitivity class of the directory, and whether a harness is `ok`, over-privileged (`!`, visible), or blocked (`⊘`, refused). herdmark never re-encodes trust law; it asks. |
+| **subject / verdict** | From `agent-deck-trust`: the sensitivity class of the directory, and whether a harness is `ok`, over-privileged (`!`, visible), or blocked (`⊘`, refused). cowbell never re-encodes trust law; it asks. |
 
 ## What it does not do
 
 - It does not replace `herdr`'s own agent detection. Live rows come from
-  `herdr agent list`; herdmark only adds directory scope and the roster.
+  `herdr agent list`; cowbell only adds directory scope and the roster.
 - It does not spin up layouts (that is herdr-plus Projects / sessionizer).
 - It does not decide trust. `agent-deck-trust match <tool> <path>` does;
   exit 4 refuses, exit 3 warns and asks.
@@ -52,10 +56,10 @@ Bare `herdmark` still prints the long registry (session ids, cwd, the absent lin
 ## Install (local link)
 
 ```bash
-herdr plugin link ~/code/herdmark-core
-herdr plugin action invoke herdmark.install-keys    # prefix+c → registry popup
+herdr plugin link ~/code/herdr-cowbell-core
+herdr plugin action invoke herdr-cowbell.install-keys    # prefix+c → registry popup
 herdr server reload-config
-herdmark import-seats                               # optional: absorb herdr-seats' roster
+cowbell import-seats                                     # optional: absorb herdr-seats' roster
 ```
 
 `install-keys` blanks the built-in `new_tab` binding (saving the original as a
@@ -65,18 +69,18 @@ first, rewrites it atomically, and is reversible with `uninstall-keys`.
 ## CLI (works outside Herdr too, as long as a server is running)
 
 ```
-herdmark                      registry for the current directory
-herdmark claude               attach to a claude harness here, or raise one with defaults
-herdmark new --harness oll-mid --name kimi-notes
-herdmark new --harness claude --model claude-opus-5 --lane green --allow Read,Grep --yes
-herdmark enter <name>         focus if live, else resume in a new tab
-herdmark adopt [name]         put the focused agent pane on the roster
-herdmark stop <name>          ctrl-c; the roster keeps the row
-herdmark list [--all]
-herdmark catalog              every harness with egress, installed?, trust badge
+cowbell                      registry for the current directory
+cowbell claude               attach to a claude harness here, or raise one with defaults
+cowbell new --harness oll-mid --name kimi-notes
+cowbell new --harness claude --model claude-opus-5 --lane green --allow Read,Grep --yes
+cowbell enter <name>         focus if live, else resume in a new tab
+cowbell adopt [name]         put the focused agent pane on the roster
+cowbell stop <name>          ctrl-c; the roster keeps the row
+cowbell list [--all]
+cowbell catalog              every harness with egress, installed?, trust badge
 ```
 
-The house launcher is `code/bin/herdmark` → `bin/herdmark` here, which picks a
+The house launcher is `code/bin/cowbell` → `bin/cowbell` here, which picks a
 python ≥ 3.11 (tomllib). macOS `/usr/bin/python3` is 3.9 and must not run this.
 
 ## How a harness is raised
@@ -84,7 +88,7 @@ python ≥ 3.11 (tomllib). macOS `/usr/bin/python3` is 3.9 and must not run this
 1. Scope = the caller's cwd (realpath). A pane *above* it never counts.
 2. Trust gate: `agent-deck-trust match <trust_tool> <cwd>`.
 3. `herdr tab create --workspace <caller ws> --cwd <cwd> --label <sitting> --no-focus`.
-   The **tab label is the sitting** (sidebar identity). herdmark never
+   The **tab label is the sitting** (sidebar identity). cowbell never
    `--title`s or pane-renames a pane to carry identity — Grok's terminal title
    is the prompt; Claude's is whatever `/rename` last set.
 4. Native kinds: `herdr agent start <sitting> --kind <kind> --pane <id> -- <argv>`
@@ -99,23 +103,24 @@ tabs; the default is the harness id (`grok`, `claude`) with `-2`, `-3` suffixes.
 `--name` is the sitting / tab label.
 
 A fresh Claude in a never-trusted directory will sit `blocked` at Claude's own
-"trust this folder" prompt. That is not herdmark's gate.
+"trust this folder" prompt. That is not cowbell's gate.
 
 ## Lineage
 
-- `herdr-seats` (Sep 2026): persisted named sittings, name-first. herdmark
+- `herdr-seats` (Sep 2026): persisted named sittings, name-first. cowbell
   absorbs its roster (`import-seats`) and adds directory scope, absence, the
   constitution, and the new-tab entry point.
 - `softwarecrafts/herdr-tab-new`: cwd-scoped resume-or-start with `--kind`;
-  acts by default where herdmark reports. Its at-or-beneath workspace rule is
+  acts by default where cowbell reports. Its at-or-beneath workspace rule is
   reused here.
-- Naming: `metawork/nomogenesis/ballots/2026-09-11-herdmark.md`.
+- Naming: `metawork/nomogenesis/ballots/2026-09-11-herdmark.md` (chosen as
+  herdmark 2026-09-11; reopened 2026-09-13 → **herdr-cowbell** / **cowbell**).
 
 ## Development
 
 ```bash
 python3 -m unittest discover -s tests -v
-herdr plugin log list --plugin herdmark
+herdr plugin log list --plugin herdr-cowbell
 ```
 
-Stdlib only. `fzf` is used for pickers when present.
+Stdlib only.
