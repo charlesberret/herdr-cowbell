@@ -1,6 +1,6 @@
 id = "herdr-cowbell"
 name = "cowbell"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.9.0"
 description = "Call up a sitting here. Per-directory herd registry (live / cold / absent, with trust) behind the new-tab key: attach to an established harness, or raise one with model, lane and tools chosen on purpose."
 platforms = ["linux", "macos"]

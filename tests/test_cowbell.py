@@ -212,7 +212,9 @@ class PickerList(unittest.TestCase):
                      {"name": "scholar", "harness": "grok", "kind": "grok", "status": "done",
                       "pane_id": "w2:p1", "workspace_id": "w2", "on_roster": True, "since": "4m"}],
             "cold": [{"name": "kimi-notes", "harness": "oll-mid", "status": "cold", "pane_id": None, "kind": "pi",
-                      "last_seen": "2026-09-11"}],
+                      "last_seen": "2026-09-11", "session_id": "k1"},
+                     {"name": "no-session", "harness": "grok", "status": "cold", "pane_id": None, "kind": "grok",
+                      "last_seen": "2026-09-12"}],
             "startable": [
                 {"harness": "claude", "title": "Claude Code", "installed": True, "trust": {"verdict": "ok"}},
                 {"harness": "grok", "title": "Grok CLI", "installed": True, "trust": {"verdict": "overprivilege"}},
@@ -232,7 +234,7 @@ class PickerList(unittest.TestCase):
         for needle in ("Running here", "Resume", "Start new", "  1  majordomo", "in sys:clubhouse", "4m",
                        "Claude Code", "! asks first"):
             self.assertIn(needle, text)
-        for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold"):
+        for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold", "no-session"):
             self.assertNotIn(gone, text)
 
     def test_widen_only_when_it_shows_more(self):
@@ -307,6 +309,65 @@ class Input(unittest.TestCase):
         line, spans = hm.hint_bar([("⏎", "open", "enter"), ("w", "wizard", "w"), ("esc", "close", "esc")])
         self.assertEqual(spans, [(3, 9, "enter"), (12, 20, "w"), (23, 32, "esc")])
         self.assertEqual(hm.visible_len(line), 31)
+
+
+class Standalone(unittest.TestCase):
+    PS = """\
+    1     0 ??       /sbin/launchd
+  500     1 ??       /Applications/Herdr.app/Contents/MacOS/herdr server
+  510   500 ttys001  -zsh
+  511   510 ttys001  claude --model claude-opus-5
+  600     1 ??       tmux -u new-session -d -s agentdeck_x
+  601   600 ttys004  pi
+  602   600 ttys005  /Users/x/.local/bin/grok --resume 019f
+  603   602 ttys005  node /opt/mcp/server.js
+  604   602 ttys005  grok helper
+  700     1 ttys009  node /opt/homebrew/bin/gemini
+  800     1 ??       /Applications/ChatGPT.app/Contents/Resources/codex app-server
+  900     1 ??       claude --print hello
+"""
+
+    def test_exe_kind(self):
+        self.assertEqual(hm.exe_kind(["claude", "--model", "x"]), "claude")
+        self.assertEqual(hm.exe_kind(["/Users/x/.local/bin/grok"]), "grok")
+        self.assertEqual(hm.exe_kind(["node", "--no-warnings", "/opt/homebrew/bin/gemini"]), "gemini")
+        self.assertEqual(hm.exe_kind(["/Applications/ChatGPT.app/Contents/Resources/codex"]), "")
+        self.assertEqual(hm.exe_kind(["-zsh"]), "")
+
+    def test_agent_processes_skip_herdr_nested_and_ttyless(self):
+        table = hm.ps_table(self.PS)
+        rows = hm.agent_processes(table, cwds=lambda pids: {p: f"/work/{p}" for p in pids})
+        self.assertEqual(sorted((r["pid"], r["agent"], r["tty"]) for r in rows),
+                         [(601, "pi", "ttys004"), (602, "grok", "ttys005"), (700, "gemini", "ttys009")])
+        self.assertEqual(rows[0]["pane_id"], f"pid:{rows[0]['pid']}")
+
+    def test_here_command_session_and_name(self):
+        claude = dict(CAT["harness"][0], session_id_flag="--session-id", name_flag="--name")
+        cmd, sid = hm.here_command(CAT, claude, "butler", model="claude-opus-5", lane="yellow")
+        self.assertEqual(cmd[:3], ["claude", "--session-id", sid])
+        self.assertEqual(len(sid), 36)
+        self.assertIn("--permission-mode", cmd)
+        self.assertEqual(cmd[-2:], ["--name", "butler"])
+        cmd, sid = hm.here_command(CAT, claude, "butler", resume_id="abc")
+        self.assertEqual(sid, "abc")
+        self.assertNotIn("--session-id", cmd)
+        self.assertEqual(cmd[cmd.index("--resume") + 1], "abc")
+
+    def test_launch_routes_by_mode(self):
+        calls = []
+        orig = hm.exec_here, hm.raise_harness
+        hm.exec_here = lambda *a, **k: calls.append("here")
+        hm.raise_harness = lambda *a, **k: calls.append("tab")
+        try:
+            hm.launch(CAT, CAT["harness"][0], "n", ROOT, hm.Ctx(cwd="/", mode="here"))
+            hm.launch(CAT, CAT["harness"][0], "n", ROOT, hm.Ctx(cwd="/", mode="tab"))
+        finally:
+            hm.exec_here, hm.raise_harness = orig
+        self.assertEqual(calls, ["here", "tab"])
+
+    def test_in_herdr_pane(self):
+        self.assertTrue(hm.in_herdr_pane({"HERDR_PANE_ID": "w1:p1"}))
+        self.assertFalse(hm.in_herdr_pane({"TERM": "xterm"}))
 
 
 class Flags(unittest.TestCase):

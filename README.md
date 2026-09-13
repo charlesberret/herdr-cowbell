@@ -82,22 +82,40 @@ cowbell import-seats                                     # optional: absorb herd
 comment), appends one marked `[[keys.command]]` block, backs up `config.toml`
 first, rewrites it atomically, and is reversible with `uninstall-keys`.
 
-## CLI (works outside Herdr too, as long as a server is running)
+## Outside herdr
+
+The same picker runs in any terminal: type `cowbell`. It needs no herdr server.
+
+- **Running here** lists herdr's agents for this directory when a herdr server is
+  up (opening one focuses it in herdr), plus agent CLIs found running in plain
+  terminals: processes on a tty whose working directory is here, skipping anything
+  under herdr or nested inside another agent. Those rows say where they run
+  (`on ttys012`); cowbell can't switch to another terminal window.
+- **Start new** and **Resume** hand this terminal to the agent (`exec`), in the
+  chosen directory. Quit the agent and you are back at your shell.
+- **Resume** lists only sessions cowbell can actually resume. Claude started here is
+  given its session id up front (`session_id_flag = "--session-id"`) and its name
+  (`name_flag = "--name"`); agents without such a flag start fresh and are not listed.
+- Inside a herdr pane, bare `cowbell` behaves like the popup and opens new tabs.
+
+## CLI
 
 ```
-cowbell                      registry for the current directory
+cowbell                      the picker (on a terminal); piped, the long registry
+cowbell status               long registry: live · cold · absent, session ids, trust
 cowbell claude               attach to a claude harness here, or raise one with defaults
 cowbell new --harness oll-mid --name kimi-notes
 cowbell new --harness claude --model claude-opus-5 --lane green --allow Read,Grep --yes
-cowbell enter <name>         focus if live, else resume in a new tab
-cowbell adopt [name]         put the focused agent pane on the roster
-cowbell stop <name>          ctrl-c; the roster keeps the row
+cowbell enter <name>         focus if live, else resume (new tab in herdr, this terminal outside)
+cowbell adopt [name]         put the focused agent pane on the roster (herdr)
+cowbell stop <name>          ctrl-c; the roster keeps the row (herdr)
 cowbell list [--all]
 cowbell catalog              every harness with egress, installed?, trust badge
 ```
 
 The house launcher is `code/bin/cowbell` → `bin/cowbell` here, which picks a
-python ≥ 3.11 (tomllib). macOS `/usr/bin/python3` is 3.9 and must not run this.
+python ≥ 3.11 (tomllib) and follows symlinks. macOS `/usr/bin/python3` is 3.9 and
+must not run this.
 
 ## How a harness is raised
 

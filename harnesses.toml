@@ -49,6 +49,8 @@ resume = ["--resume"]
 tools_allow_flag = "--allowedTools"
 tools_deny_flag = "--disallowedTools"
 seat_flag = "--append-system-prompt-file"   # used only when a SEAT.md is found at or above the directory
+session_id_flag = "--session-id"   # outside herdr: cowbell picks the id so it can resume later
+name_flag = "--name"               # outside herdr: the sitting name as the session display name
 
 [[harness]]
 id = "codex"
