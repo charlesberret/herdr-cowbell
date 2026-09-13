@@ -204,33 +204,109 @@ class Keys(unittest.TestCase):
 
 
 class PickerList(unittest.TestCase):
-    def test_raiseable_skips_blocked_and_missing(self):
-        reg = {
+    def reg(self):
+        return {
             "root": ROOT, "subject": "internal",
-            "live": [{"name": "majordomo", "harness": "claude", "status": "idle",
-                      "pane_id": "w1:p1", "on_roster": True}],
-            "cold": [{"name": "kimi-notes", "harness": "oll-mid", "status": "cold",
-                      "pane_id": None, "kind": "pi"}],
-            "absent": [
-                {"harness": "grok", "kind": "grok", "egress": "vendor", "installed": True,
-                 "trust": {"verdict": "ok"}},
-                {"harness": "omp", "kind": "omp", "egress": "vendor", "installed": False,
-                 "trust": {"verdict": "ok"}},
-                {"harness": "local-ornith", "kind": "pi", "egress": "local", "installed": False,
-                 "trust": {"verdict": "blocked"}},
+            "live": [{"name": "majordomo", "harness": "claude", "kind": "claude", "status": "idle",
+                      "pane_id": "w1:p1", "workspace_id": "w1", "on_roster": True, "since": ""},
+                     {"name": "scholar", "harness": "grok", "kind": "grok", "status": "done",
+                      "pane_id": "w2:p1", "workspace_id": "w2", "on_roster": True, "since": "4m"}],
+            "cold": [{"name": "kimi-notes", "harness": "oll-mid", "status": "cold", "pane_id": None, "kind": "pi",
+                      "last_seen": "2026-09-11"}],
+            "startable": [
+                {"harness": "claude", "title": "Claude Code", "installed": True, "trust": {"verdict": "ok"}},
+                {"harness": "grok", "title": "Grok CLI", "installed": True, "trust": {"verdict": "overprivilege"}},
+                {"harness": "omp", "title": "omp", "installed": False, "trust": {"verdict": "ok"}},
+                {"harness": "local-ornith", "title": "ornith", "installed": True, "trust": {"verdict": "blocked"}},
+                {"harness": "pi", "title": "pi (bare)", "installed": True, "trust": {"verdict": "unknown"}},
             ],
+            "absent": [],
         }
-        choices = hm.picker_choices(reg)
-        self.assertEqual([c["action"] for c in choices], ["focus", "enter", "raise"])
-        self.assertEqual(choices[2]["target"]["harness"], "grok")
+
+    def test_sections_and_what_is_left_off(self):
+        reg = self.reg()
+        choices = hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "sys:clubhouse"})
+        self.assertEqual([c["section"] for c in choices], ["running", "running", "resume", "start", "start", "start"])
+        self.assertEqual([c["target"]["harness"] for c in choices if c["action"] == "raise"], ["claude", "grok", "pi"])
         text = hm.render_picker(reg, choices)
-        self.assertIn("LIVE", text)
-        self.assertIn("COLD", text)
-        self.assertIn("RAISE", text)
-        self.assertIn("  3  grok", text)
-        self.assertIn("⊘  local-ornith", text)
-        self.assertIn("not installed: omp", text)
-        self.assertNotIn("local-ornith", [c["target"].get("harness") for c in choices if c["action"] == "raise"])
+        for needle in ("Running here", "Resume", "Start new", "  1  majordomo", "in sys:clubhouse", "4m",
+                       "Claude Code", "! asks first"):
+            self.assertIn(needle, text)
+        for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold"):
+            self.assertNotIn(gone, text)
+
+    def test_widen_only_when_it_shows_more(self):
+        reg = self.reg()
+        choices = hm.picker_choices(reg, [])
+        self.assertNotIn("widen", hm.render_picker(reg, choices, "/Users/x/code/notes", wider=2))
+        self.assertIn("g widen to metawork · 5 running",
+                      hm.render_picker(reg, choices, "/Users/x/code/notes", wider=5))
+
+    def test_fold_and_numbers_skip_more_row(self):
+        reg = self.reg()
+        reg["startable"] = [{"harness": f"h{i}", "title": "", "installed": True, "trust": {"verdict": "ok"}}
+                            for i in range(8)]
+        choices = hm.picker_choices(reg, [])
+        start = [c for c in choices if c["section"] == "start"]
+        self.assertEqual(len(start), hm.FOLD)
+        self.assertEqual(start[-1]["action"], "more")
+        self.assertIn("+ 4 more", start[-1]["line"])
+        hm.render_picker(reg, choices)
+        self.assertIsNone(start[-1]["idx"])
+        self.assertEqual([c["idx"] for c in choices if c["action"] != "more"], list(range(1, 8)))
+        self.assertEqual(len([c for c in hm.picker_choices(reg, [], expanded={"start"}) if c["section"] == "start"]), 8)
+
+    def test_rank_here_beats_elsewhere_beats_catalog_order(self):
+        roster = [{"harness": "grok", "cwd": "/Users/x/other", "last_seen": "2026-09-12"},
+                  {"harness": "grok", "cwd": "/Users/x/other2", "last_seen": "2026-09-12"},
+                  {"harness": "pi", "cwd": ROOT + "/sub", "last_seen": "2026-09-01"}]
+        self.assertEqual(hm.rank_harnesses(["claude", "grok", "pi", "agy"], roster, ROOT),
+                         ["pi", "grok", "claude", "agy"])
+
+    def test_ago(self):
+        import datetime as dt
+        today = dt.date(2026, 9, 13)
+        self.assertEqual(hm.ago("2026-09-13T10:00:00", today), "today")
+        self.assertEqual(hm.ago("2026-09-12", today), "yesterday")
+        self.assertEqual(hm.ago("2026-09-11", today), "2 days ago")
+        self.assertEqual(hm.ago("2026-06-01", today), "Jun 1")
+        self.assertEqual(hm.ago("", today), "")
+
+    def test_remember_live_records_unseen_agents_once(self):
+        reg = {"live": [{"name": "ballots", "harness": "claude", "kind": "claude", "cwd": ROOT, "pane_id": "w1:p3",
+                         "session_id": "s9", "on_roster": False},
+                        {"name": "nosession", "harness": "grok", "kind": "grok", "cwd": ROOT, "pane_id": "w1:p4",
+                         "session_id": "", "on_roster": False}]}
+        rows = [{"name": "ballots", "cwd": "/elsewhere"}]
+        saved = []
+        orig, hm.save_roster = hm.save_roster, saved.append
+        try:
+            self.assertEqual(hm.remember_live(reg, rows), 1)
+            self.assertEqual(hm.remember_live(reg, rows), 0)
+        finally:
+            hm.save_roster = orig
+        self.assertEqual(rows[-1]["name"], "ballots-2")
+        self.assertEqual(rows[-1]["session_id"], "s9")
+        self.assertEqual(len(saved), 1)
+
+
+class Input(unittest.TestCase):
+    def test_keys_and_mouse(self):
+        evs, tail = hm.parse_input(b"\x1b[A\x1b[Bj\r\x1b[<0;8;11M\x1b[<0;8;11m\x1b[<65;1;2M\x1b[5~")
+        self.assertEqual(evs, [("key", "up"), ("key", "down"), ("char", "j"), ("key", "enter"),
+                               ("mouse", 0, 8, 11, True), ("mouse", 0, 8, 11, False),
+                               ("mouse", 65, 1, 2, True), ("key", "pgup")])
+        self.assertEqual(tail, b"")
+
+    def test_lone_esc_waits_and_partial_sequence_is_kept(self):
+        self.assertEqual(hm.parse_input(b"\x1b"), ([], b"\x1b"))
+        self.assertEqual(hm.parse_input(b"a\x1b[<0;8"), ([("char", "a")], b"\x1b[<0;8"))
+        self.assertEqual(hm.parse_input(b"\x1bx")[0], [("key", "esc"), ("char", "x")])
+
+    def test_hint_bar_spans_are_plain_columns(self):
+        line, spans = hm.hint_bar([("⏎", "open", "enter"), ("w", "wizard", "w"), ("esc", "close", "esc")])
+        self.assertEqual(spans, [(3, 9, "enter"), (12, 20, "w"), (23, 32, "esc")])
+        self.assertEqual(hm.visible_len(line), 31)
 
 
 class Flags(unittest.TestCase):
@@ -324,6 +400,13 @@ class Seed(unittest.TestCase):
         self.assertEqual(grok.get("claim_flag"), "--agent")
         self.assertEqual(cat["lanes"]["grok"]["green"], ["--permission-mode", "plan"])
         self.assertEqual(cat["lanes"]["grok"]["yellow"], ["--permission-mode", "acceptEdits"])
+
+    def test_seed_is_standard_agents_only(self):
+        import tomllib
+        seed = Path(__file__).resolve().parent.parent / "harnesses.toml"
+        cat = tomllib.loads(seed.read_text())
+        self.assertFalse([h["id"] for h in cat["harness"] if "command" in h])   # no house wrappers
+        self.assertFalse(cat["defaults"]["ask_name"])
 
 
 if __name__ == "__main__":

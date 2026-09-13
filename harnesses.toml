@@ -1,21 +1,22 @@
-# cowbell — the constitution of the herd.
+# cowbell — which agents can be started, and how.
 #
-# A harness is a way of raising an agent: which executable, which model, which
-# lane (write/bash knobs), which tools, and which trust surface it answers to.
-# cowbell reads this file to know what *may* be raised in a directory; the
-# roster (state dir, roster.json) records what *has* been raised and where.
+# This is the seed that ships with the plugin. It is copied to the plugin config
+# dir (`herdr plugin config-dir herdr-cowbell`) the first time cowbell runs, and
+# that copy is the one to edit: add your own launchers, models, and presets.
+# An agent that is not installed simply does not appear in the popup.
 #
-# Edit freely. This is the copy in your plugin config dir; the plugin root
-# ships a seed that is only copied here when this file is absent.
-#
-# Lanes are the house shorthand for write/bash knobs (trust-register.md):
-# they are not a trust model. Trust verdicts come from `agent-deck-trust match`.
+# Each [[harness]] is one way of starting an agent: the executable (a herdr agent
+# kind, or a `command` wrapper), its models, and how it resumes a session.
+# Optional: `trust_tool` names it to agent-deck-trust, if you use that; without
+# the tool, cowbell shows no trust verdicts at all.
 
 [defaults]
-lane = "yellow"
+lane = "yellow"      # permissions preset used by Enter (quick start); `n` lets you choose
+ask_name = false     # true: Enter asks for a tab name before starting
 
-# lane -> extra argv, per native kind. Wrappers (family local/oll/wk/bt) bake
-# their lane into the wrapper and ignore this table.
+# Permissions presets ("lanes"): green = read / plan, yellow = edits allowed,
+# red = no prompts. Extra argv per agent kind. A kind with no table starts with
+# its own defaults. Wrappers (`command = ...`) bake permissions in and ignore this.
 [lanes.claude]
 green  = ["--permission-mode", "plan"]
 yellow = ["--permission-mode", "acceptEdits"]
@@ -27,170 +28,73 @@ green  = ["--permission-mode", "plan"]
 yellow = ["--permission-mode", "acceptEdits"]
 red    = ["--always-approve"]
 
+[lanes.codex]
+# Codex CLI sandbox flags (not verified against an installed codex here).
+green  = ["--sandbox", "read-only"]
+yellow = ["--sandbox", "workspace-write"]
+red    = ["--dangerously-bypass-approvals-and-sandbox"]
+
 [lanes.pi]
 green  = ["--tools", "read"]
 yellow = ["--tools", "read,edit,write"]
 red    = []
 
-# ---------------------------------------------------------------------------
-# Native kinds — herdr starts these itself (`herdr agent start --kind`), so
-# the sidebar reports working / blocked / idle.
-# ---------------------------------------------------------------------------
-
 [[harness]]
 id = "claude"
 kind = "claude"
 title = "Claude Code"
-family = "claude"
-egress = "vendor"
-trust_tool = "claude"
 models = ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"]
 model_flag = ["--model"]
 resume = ["--resume"]
 tools_allow_flag = "--allowedTools"
 tools_deny_flag = "--disallowedTools"
-seat_flag = "--append-system-prompt-file"
+seat_flag = "--append-system-prompt-file"   # used only when a SEAT.md is found at or above the directory
+
+[[harness]]
+id = "codex"
+kind = "codex"
+title = "Codex"
+models = []
+model_flag = ["--model"]
+resume = ["resume"]   # a subcommand, not a flag
 
 [[harness]]
 id = "grok"
 kind = "grok"
 title = "Grok CLI"
-family = "grok"
-egress = "vendor"
-trust_tool = "grok"
 models = []
 model_flag = ["-m"]
 resume = ["--resume"]
 tools_allow_flag = "--allowedTools"
 tools_deny_flag = "--disallowed-tools"
-claim_flag = "--agent"   # sitting head (`builder-minaret` → builder) when ~/.grok/agents/<word>.md exists
+claim_flag = "--agent"   # passes --agent <name> only when ~/.grok/agents/<name>.md exists
+
+[[harness]]
+id = "gemini"
+kind = "gemini"
+title = "Gemini CLI"
+models = []
+resume = []
 
 [[harness]]
 id = "agy"
 kind = "agy"
 title = "Antigravity (Gemini)"
-family = "gemini"
-egress = "vendor"
-trust_tool = "agy"
 models = []
 resume = ["--conversation"]
 
 [[harness]]
+id = "opencode"
+kind = "opencode"
+title = "OpenCode"
+models = []
+resume = ["--session"]
+
+[[harness]]
 id = "pi"
 kind = "pi"
-title = "pi (bare)"
-family = "pi"
-egress = "vendor"
-trust_tool = "pi"
+title = "pi"
 models = []
 model_flag = ["--model"]
 resume = ["--continue"]
 tools_allow_flag = "--tools"
-seat_flag = "--append-system-prompt"
-
-# ---------------------------------------------------------------------------
-# House wrappers — pi launchers with the lane, model, and SEAT.md injection
-# baked in (code/bin/lib/pi-project-seat.sh). Raised with `herdr pane run`;
-# herdr may detect pi inside, but treat their status as advisory.
-# Ladder and egress: system/remote-nerve/remote-nerve-center.md.
-# ---------------------------------------------------------------------------
-
-[[harness]]
-id = "local-ornith"
-kind = "pi"
-title = "ornith 9b — local coding (mesh weights)"
-family = "local"
-egress = "local"
-trust_tool = "local-ornith"
-command = "~/.local/bin/local-ornith"
-resume = ["--continue"]
-
-[[harness]]
-id = "local-penlight"
-kind = "pi"
-title = "penlight — local writing persona"
-family = "local"
-egress = "local"
-trust_tool = "local-penlight"
-command = "~/.local/bin/local-penlight"
-resume = ["--continue"]
-
-[[harness]]
-id = "oll-light"
-kind = "pi"
-title = "kimi k2.7 cloud — triage"
-family = "oll"
-egress = "vendor"
-trust_tool = "oll-light"
-command = "~/.local/bin/oll-light"
-resume = ["--continue"]
-
-[[harness]]
-id = "oll-mid"
-kind = "pi"
-title = "kimi k2.7 cloud — default coding"
-family = "oll"
-egress = "vendor"
-trust_tool = "oll-mid"
-command = "~/.local/bin/oll-mid"
-resume = ["--continue"]
-
-[[harness]]
-id = "oll-heavy"
-kind = "pi"
-title = "glm 5.2 cloud — hard bugs, long horizon"
-family = "oll"
-egress = "vendor"
-trust_tool = "oll-heavy"
-command = "~/.local/bin/oll-heavy"
-resume = ["--continue"]
-
-[[harness]]
-id = "oll-vision"
-kind = "pi"
-title = "minimax m3 cloud — vision / long context"
-family = "oll"
-egress = "vendor"
-trust_tool = "oll-vision"
-command = "~/.local/bin/oll-vision"
-resume = ["--continue"]
-
-[[harness]]
-id = "oll-memo"
-kind = "pi"
-title = "kimi cloud — memo lane (create-sink only)"
-family = "oll"
-egress = "vendor"
-trust_tool = "oll-memo"
-command = "~/.local/bin/oll-memo"
-resume = ["--continue"]
-
-[[harness]]
-id = "wk-kimi-code"
-kind = "pi"
-title = "wunderkind kimi (cloud, green tools)"
-family = "wk"
-egress = "vendor"
-trust_tool = "wk-kimi-code"
-command = "~/.local/bin/wk-kimi-code"
-resume = ["--continue"]
-
-[[harness]]
-id = "bt-oll-mid"
-kind = "pi"
-title = "braintrust fellow body — kimi"
-family = "bt"
-egress = "vendor"
-trust_tool = "bt-oll-mid"
-command = "~/.local/bin/bt-oll-mid"
-resume = ["--continue"]
-
-[[harness]]
-id = "bt-oll-heavy"
-kind = "pi"
-title = "braintrust fellow body — glm"
-family = "bt"
-egress = "vendor"
-trust_tool = "bt-oll-heavy"
-command = "~/.local/bin/bt-oll-heavy"
-resume = ["--continue"]

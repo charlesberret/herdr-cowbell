@@ -54,6 +54,67 @@ class HerdrError(RuntimeError):
     pass
 
 
+# --- colour ------------------------------------------------------------------
+# House Kettle Dark (~/.config/herdr/config.toml [theme.custom]). Mostly grey
+# hierarchy; gold is spent on the one thing to press (the numbers and the prompt).
+# State words borrow the sidebar's chroma; red only for a trust warning.
+
+INK, SECONDARY, MUTED, FAINT = "#d8d8e0", "#a9a9b2", "#8a8a92", "#6c6d74"
+GOLD, RED, TEAL = "#c8a24a", "#d4756b", "#389bb4"
+# working stays ink, not the sidebar's running gold: here gold means "press this".
+STATUS_FG = {"working": INK, "blocked": RED, "done": TEAL, "idle": MUTED, "cold": FAINT}
+
+
+def color_on(stream=None) -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("COWBELL_COLOR") in ("1", "always"):
+        return True
+    stream = stream or sys.stdout
+    return hasattr(stream, "isatty") and stream.isatty() and os.environ.get("TERM") != "dumb"
+
+
+def paint(text: str, fg: str = "", bold: bool = False) -> str:
+    """Style already-padded text; plain when colour is off (pipes, tests, NO_COLOR)."""
+    if not text or not color_on():
+        return text
+    codes = ["1"] if bold else []
+    if fg:
+        codes.append("38;2;{};{};{}".format(*(int(fg[i:i + 2], 16) for i in (1, 3, 5))))
+    return f"\x1b[{';'.join(codes)}m{text}\x1b[0m" if codes else text
+
+
+def key(n, width: int = 3) -> str:
+    return paint(f"{n:>{width}}", GOLD, bold=True)
+
+
+def status_cell(status: str, width: int = 8) -> str:
+    return paint(f"{status:<{width}}", STATUS_FG.get(status, MUTED))
+
+
+def verdict_cell(v: dict) -> str:
+    mark = verdict_mark(v)
+    return paint(mark, RED if mark == "!" else FAINT if mark == "ok" else MUTED, bold=mark == "!")
+
+
+def header(reg: dict, git_top: str | None, wider: int | None, widen_hint: bool = True) -> list[str]:
+    out = [f"  {paint('cowbell', INK, bold=True)}  {paint(tilde(reg['root']), SECONDARY)}   "
+           f"{paint('subject:', FAINT)} {paint(reg['subject'] or '?', MUTED)}"]
+    if git_top and os.path.realpath(git_top) != os.path.realpath(reg["root"]):
+        hint = f"   ({wider} live under it)" if wider is not None else ""
+        out.append(paint(f"  git root: {tilde(git_top)}{hint}", FAINT)
+                   + (f"   {paint('[g]', MUTED)} {paint('widen', FAINT)}" if widen_hint else ""))
+    return out
+
+
+def section_title(title: str) -> str:
+    return f"  {paint(title, MUTED, bold=True)}"
+
+
+def section(title: str, note: str = "") -> str:
+    return f"  {paint(title, MUTED, bold=True)}" + (f"  {paint(note, FAINT)}" if note else "")
+
+
 # --- paths -----------------------------------------------------------------
 
 def plugin_root() -> Path:
@@ -453,6 +514,8 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
             "workspace_id": a.get("workspace_id"), "cwd": a.get("cwd"),
             "session_id": (a.get("agent_session") or {}).get("value") or (r or {}).get("session_id", ""),
             "on_roster": r is not None,
+            # turn clock, only where a sidebar reporter publishes one ($since while working, $total when done)
+            "since": ((a.get("tokens") or {}).get("since") or (a.get("tokens") or {}).get("total") or "").strip(),
         })
         seen_pane.add(a["pane_id"])
 
@@ -464,113 +527,182 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         cold_rows.append({**r, "status": "unknown" if pane_alive else "cold", "pane_alive": pane_alive})
 
     present = {x["harness"] for x in live_rows} | {x.get("harness") for x in cold_rows}
-    absent = []
-    tools = sorted({str(h["trust_tool"]) for h in cat.get("harness", []) if h["id"] not in present})
+    absent, startable = [], []
+    tools = sorted({str(h["trust_tool"]) for h in cat.get("harness", [])})
     verdicts: dict[str, dict] = {}
     if tools:
         with ThreadPoolExecutor(max_workers=8) as pool:
             for tool, v in zip(tools, pool.map(matcher, tools)):
                 verdicts[tool] = v
     for h in cat.get("harness", []):
-        if h["id"] in present:
-            continue
-        absent.append({"harness": h["id"], "kind": h["kind"], "family": h["family"], "egress": h["egress"],
-                       "installed": installed(h), "trust": verdicts.get(h["trust_tool"], {"verdict": "unknown"})})
-    return {"root": root, "subject": subject, "live": live_rows, "cold": cold_rows, "absent": absent}
+        row = {"harness": h["id"], "kind": h["kind"], "family": h["family"], "egress": h["egress"],
+               "title": h.get("title", ""), "installed": installed(h),
+               "trust": verdicts.get(h["trust_tool"], {"verdict": "unknown"})}
+        startable.append(row)
+        if h["id"] not in present:
+            absent.append(row)
+    return {"root": root, "subject": subject, "live": live_rows, "cold": cold_rows, "absent": absent,
+            "startable": startable}
 
 
 def render_registry(reg: dict, git_top: str | None = None, wider: int | None = None) -> str:
-    out = [f"cowbell  {tilde(reg['root'])}   subject: {reg['subject'] or '?'}"]
-    if git_top and os.path.realpath(git_top) != os.path.realpath(reg["root"]):
-        hint = f"   ({wider} live under it)" if wider is not None else ""
-        out.append(f"  git root: {tilde(git_top)}{hint}   [g] widen")
+    out = header(reg, git_top, wider)
     idx = 0
     if reg["live"]:
         out.append("")
-        out.append("  LIVE HERE")
+        out.append(section("LIVE HERE"))
         for r in reg["live"]:
             idx += 1
             r["idx"] = idx
             tag = "" if r["on_roster"] else "  (not on roster)"
-            out.append(f"  {idx:>3}  {r['name']:<24} {r['harness']:<14} {r['status']:<9} {r['pane_id']:<8} "
-                       f"{(r.get('session_id') or '')[:8]:<8} {tilde(r['cwd'])}{tag}")
+            name, harness = f"{r['name']:<24}", f"{r['harness']:<14}"
+            rest = f"{r['pane_id']:<8} {(r.get('session_id') or '')[:8]:<8} {tilde(r['cwd'])}{tag}"
+            out.append(f"  {key(idx)}  {paint(name, INK, bold=True)} {paint(harness, MUTED)} "
+                       f"{status_cell(r['status'], 9)} {paint(rest, FAINT)}")
     if reg["cold"]:
         out.append("")
-        out.append("  COLD HERE (resumable)")
+        out.append(section("COLD HERE", "resumable"))
         for r in reg["cold"]:
             idx += 1
             r["idx"] = idx
-            out.append(f"  {idx:>3}  {r['name']:<24} {r.get('harness') or r.get('kind'):<14} {r['status']:<9} "
-                       f"{r.get('pane_id') or DASH:<8} {(r.get('session_id') or '')[:8]:<8} {tilde(r['cwd'])}")
+            name, harness = f"{r['name']:<24}", f"{r.get('harness') or r.get('kind'):<14}"
+            rest = f"{r.get('pane_id') or DASH:<8} {(r.get('session_id') or '')[:8]:<8} {tilde(r['cwd'])}"
+            out.append(f"  {key(idx)}  {paint(name, SECONDARY)} {paint(harness, MUTED)} "
+                       f"{status_cell(r['status'], 9)} {paint(rest, FAINT)}")
     if not reg["live"] and not reg["cold"]:
         out.append("")
-        out.append("  nothing raised here yet")
+        out.append(paint("  nothing raised here yet", FAINT))
     if reg["absent"]:
         out.append("")
-        out.append("  ABSENT HERE  (glyph: ⌂ local  ↑ vendor · verdict: ok  ! overprivilege  ⊘ blocked  ? unknown)")
-        bits = []
+        out.append(section("ABSENT HERE", "⌂ local  ↑ vendor · ok  ! overprivilege  ⊘ blocked  ? unknown"))
+        bits = []  # (plain width, painted)
         for a in reg["absent"]:
             mark = verdict_mark(a["trust"])
             miss = "" if a["installed"] else " (not installed)"
-            bits.append(f"{a['harness']} {GLYPH.get(a['egress'], '?')}{mark}{miss}")
-        line, lines = "  ", []
-        for b in bits:
-            if len(line) + len(b) + 3 > 100:
-                lines.append(line.rstrip(" ·"))
-                line = "  "
-            line += b + " · "
-        lines.append(line.rstrip(" ·"))
+            glyph = GLYPH.get(a["egress"], "?")
+            plain = f"{a['harness']} {glyph}{mark}{miss}"
+            name = paint(a["harness"], FAINT if not a["installed"] or mark == "⊘" else SECONDARY)
+            m = paint(mark, RED) if mark == "⊘" else verdict_cell(a["trust"])
+            bits.append((len(plain), f"{name} {paint(glyph, FAINT)}{m}{paint(miss, FAINT)}"))
+        sep = paint(" · ", FAINT)
+        width, row, lines = 2, [], []
+        for w, b in bits:
+            if row and width + w + 3 > 100:
+                lines.append("  " + sep.join(row))
+                width, row = 2, []
+            row.append(b)
+            width += w + 3
+        lines.append("  " + sep.join(row))
         out.extend(lines)
     return "\n".join(out)
 
 
-def picker_choices(reg: dict) -> list[dict]:
-    """Popup rows: live, cold, then raiseable absent (installed and not blocked)."""
-    out: list[dict] = []
-    for r in reg["live"]:
-        tag = "" if r.get("on_roster") else "  (not on roster)"
-        out.append({"action": "focus", "target": r,
-                    "line": f"{r['name']:<22} {r['harness']:<12} {r['status']:<8} {r['pane_id']}{tag}"})
-    for r in reg["cold"]:
-        out.append({"action": "enter", "target": r,
-                    "line": f"{r['name']:<22} {r.get('harness') or r.get('kind') or '':<12} {r['status']:<8} {r.get('pane_id') or DASH}"})
-    for a in reg["absent"]:
-        if not a.get("installed") or a.get("trust", {}).get("verdict") == "blocked":
+FOLD = 5  # a section longer than this shows FOLD-1 rows and a "+ N more" row
+
+
+def rank_harnesses(ids: list[str], roster: list[dict], root: str) -> list[str]:
+    """Most used here first (a start at or beneath root counts 3), then anywhere, then catalog order."""
+    order = {hid: i for i, hid in enumerate(ids)}
+    score: dict[str, int] = {}
+    latest: dict[str, str] = {}
+    for r in roster:
+        hid = r.get("harness") or r.get("kind") or ""
+        if hid not in order:
             continue
-        mark = GLYPH.get(a["egress"], "?") + verdict_mark(a["trust"])
-        out.append({"action": "raise", "target": a, "line": f"{a['harness']:<22} {mark}"})
+        score[hid] = score.get(hid, 0) + (3 if r.get("cwd") and at_or_beneath(r["cwd"], root) else 1)
+        latest[hid] = max(latest.get(hid, ""), r.get("last_seen") or r.get("created") or "")
+    out = sorted(ids, key=lambda h: latest.get(h, ""), reverse=True)  # stable: ties keep catalog order
+    return sorted(out, key=lambda h: -score.get(h, 0))
+
+
+def ago(stamp: str, today: _dt.date | None = None) -> str:
+    """Roster dates are days (last_seen) or ISO seconds (created); say it the way a person would."""
+    if not stamp:
+        return ""
+    try:
+        day = _dt.date.fromisoformat(stamp[:10])
+    except ValueError:
+        return ""
+    days = ((today or _dt.date.today()) - day).days
+    return "today" if days <= 0 else "yesterday" if days == 1 else f"{days} days ago" if days < 30 \
+        else day.strftime("%b %-d")
+
+
+def fold(rows: list[dict], section: str, expanded: set[str]) -> list[dict]:
+    if section in expanded or len(rows) <= FOLD:
+        return rows
+    return rows[:FOLD - 1] + [{"action": "more", "section": section, "key": f"more:{section}",
+                               "hidden": len(rows) - (FOLD - 1),
+                               "line": paint(f"+ {len(rows) - (FOLD - 1)} more", FAINT)}]
+
+
+def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | None = None,
+                   ws_labels: dict[str, str] | None = None, expanded: set[str] | None = None) -> list[dict]:
+    """Popup rows: running here, resume, start new. Only what changes a choice is on the row."""
+    expanded = expanded or set()
+    ws_labels = ws_labels or {}
+    live: list[dict] = []
+    for r in sorted(reg["live"], key=lambda r: bool(here_ws) and r.get("workspace_id") != here_ws):
+        name, kind = f"{r['name']:<22}", f"{r.get('kind') or r['harness'] or '':<11}"
+        where = ws_labels.get(r.get("workspace_id") or "", "") if here_ws and r.get("workspace_id") != here_ws else ""
+        clock = f"{r.get('since', ''):<6}" if any(x.get("since") for x in reg["live"]) else ""
+        extra = f"{clock}{'in ' + where if where else ''}".rstrip()
+        live.append({"action": "focus", "target": r, "key": f"focus:{r['pane_id']}",
+                     "line": f"{paint(name, INK, bold=True)} {paint(kind, MUTED)} {status_cell(r['status'])}"
+                             + (f" {paint(extra, FAINT)}" if extra else "")})
+    cold = sorted(reg["cold"], key=lambda r: r.get("last_seen") or r.get("created") or "", reverse=True)
+    resume = []
+    for r in cold:
+        name, kind = f"{r['name']:<22}", f"{r.get('harness') or r.get('kind') or '':<11}"
+        resume.append({"action": "enter", "target": r, "key": f"enter:{r['name']}",
+                       "line": f"{paint(name, SECONDARY)} {paint(kind, MUTED)} "
+                               f"{paint(ago(r.get('last_seen') or r.get('created') or ''), FAINT)}"})
+    pool = {a["harness"]: a for a in reg.get("startable", reg["absent"])
+            if a.get("installed") and a.get("trust", {}).get("verdict") != "blocked"}
+    start = []
+    ranked = rank_harnesses(list(pool), roster or [], reg["root"])
+    shown = ranked if "start" in expanded or len(ranked) <= FOLD else ranked[:FOLD - 1]
+    title_w = min(34, max((len(pool[h].get("title") or "") for h in shown), default=0))
+    for hid in ranked:
+        a = pool[hid]
+        warn = f"   {paint('!', RED, bold=True)} {paint('asks first', FAINT)}" \
+            if a.get("trust", {}).get("verdict") == "overprivilege" else ""
+        start.append({"action": "raise", "target": a, "key": f"raise:{hid}",
+                      "line": f"{paint(f'{hid:<22}', SECONDARY)} "
+                              + paint(f"{a.get('title') or '':<{title_w}}" if warn else a.get("title") or "", MUTED) + warn})
+    out = []
+    for section, rows in (("running", live), ("resume", resume), ("start", start)):
+        out += [dict(c, section=section) for c in fold(rows, section, expanded)]
     return out
 
 
-def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wider: int | None = None) -> str:
-    """New-tab surface: one numbered list, then it should close."""
-    out = [f"cowbell  {tilde(reg['root'])}   subject: {reg['subject'] or '?'}"]
-    if git_top and os.path.realpath(git_top) != os.path.realpath(reg["root"]):
-        hint = f"   ({wider} live under it)" if wider is not None else ""
-        out.append(f"  git root: {tilde(git_top)}{hint}   [g] widen")
+def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wider: int | None = None,
+                  width: int = 84) -> str:
+    """New-tab surface: running here, resume, start new. Numbers are for rows you can open."""
+    path = tilde(reg["root"])
+    right = ""
+    if git_top and wider is not None and wider > len(reg["live"]):
+        right = f"g widen to {os.path.basename(git_top.rstrip('/'))} · {wider} running"
+    gap = width - 2 - len(path) - len(right)
+    out = [f"  {paint(path, SECONDARY, bold=True)}" + (f"{' ' * max(3, gap)}{paint(right, FAINT)}" if right else "")]
     n = 0
-    sections = (("focus", "LIVE"), ("enter", "COLD"),
-                ("raise", "RAISE  (yellow · sitting asked once)"))
-    for action, title in sections:
-        rows = [c for c in choices if c["action"] == action]
+    for section, title in (("running", "Running here"), ("resume", "Resume"), ("start", "Start new")):
+        rows = [c for c in choices if c.get("section") == section]
         if not rows:
             continue
         out.append("")
-        out.append(f"  {title}")
+        out.append(section_title(title))
         for c in rows:
+            c["row"] = len(out)
+            if c["action"] == "more":
+                c["idx"] = None
+                out.append(f"       {c['line']}")
+                continue
             n += 1
             c["idx"] = n
-            out.append(f"  {n:>3}  {c['line']}")
-    blocked = [a["harness"] for a in reg["absent"]
-               if a.get("trust", {}).get("verdict") == "blocked"]
-    missing = [a["harness"] for a in reg["absent"]
-               if not a.get("installed") and a.get("trust", {}).get("verdict") != "blocked"]
-    if blocked or missing:
-        out.append("")
-        if blocked:
-            out.append("  ⊘  " + " · ".join(blocked))
-        if missing:
-            out.append("     not installed: " + " · ".join(missing))
+            out.append(f"  {key(n)}  {c['line']}")
+    if not choices:
+        out += ["", paint("  nothing to start here: no agents from harnesses.toml are installed", FAINT)]
     return "\n".join(out)
 
 
@@ -1060,9 +1192,250 @@ def cmd_keys(action: str, path: Path = HERDR_CONFIG) -> None:
     print("run: herdr server reload-config")
 
 
+# --- tui -------------------------------------------------------------------------
+# Herdr is mouse-first. The popup is a plain terminal, so the menu speaks the
+# terminal's own dialect: raw keys, SGR mouse (1006), alternate screen. Stdlib only.
+# Free-text prompts (sitting name, y/N) still run cooked, outside the menu.
+
+SELECT_BG = "#233954"  # theme.custom selection_bg
+ANSI_RE = re.compile(r"\x1b\[[0-9;?<]*[A-Za-z]")
+KEYS = {b"[A": "up", b"[B": "down", b"[C": "right", b"[D": "left", b"[H": "home", b"[F": "end",
+        b"OA": "up", b"OB": "down", b"OC": "right", b"OD": "left", b"OH": "home", b"OF": "end",
+        b"[5~": "pgup", b"[6~": "pgdn", b"[1~": "home", b"[4~": "end", b"[Z": "backtab"}
+MOUSE_RE = re.compile(rb"\[<(\d+);(\d+);(\d+)([Mm])")
+
+
+def visible_len(text: str) -> int:
+    return len(ANSI_RE.sub("", text))
+
+
+def tui_ok() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM") != "dumb" \
+        and not os.environ.get("COWBELL_PLAIN")
+
+
+def parse_input(buf: bytes) -> tuple[list[tuple], bytes]:
+    """Bytes -> events. Returns (events, unconsumed tail). A lone trailing ESC stays in the tail."""
+    events, i = [], 0
+    while i < len(buf):
+        b = buf[i:i + 1]
+        if b == b"\x1b":
+            rest = buf[i + 1:]
+            if not rest:
+                break  # maybe the start of a sequence; caller decides after a short wait
+            m = MOUSE_RE.match(rest)
+            if m:
+                code, x, y = int(m[1]), int(m[2]), int(m[3])
+                events.append(("mouse", code, x, y, m[4] == b"M"))
+                i += 1 + m.end()
+                continue
+            for seq, name in KEYS.items():
+                if rest.startswith(seq):
+                    events.append(("key", name))
+                    i += 1 + len(seq)
+                    break
+            else:
+                if rest[:1] in (b"[", b"O"):  # unknown CSI/SS3: swallow through its final byte
+                    j = 1
+                    while j < len(rest) and not (0x40 <= rest[j] <= 0x7e):
+                        j += 1
+                    if j >= len(rest):
+                        break  # incomplete
+                    i += 2 + j
+                else:
+                    events.append(("key", "esc"))
+                    i += 1
+            continue
+        if b in (b"\r", b"\n"):
+            events.append(("key", "enter"))
+        elif b == b"\t":
+            events.append(("key", "tab"))
+        elif b in (b"\x7f", b"\x08"):
+            events.append(("key", "backspace"))
+        elif b == b"\x03":
+            events.append(("key", "esc"))
+        else:
+            events.append(("char", b.decode("latin-1")))
+        i += 1
+    return events, buf[i:]
+
+
+class Screen:
+    """Raw mode + alternate screen + mouse, restored on exit whatever happens."""
+
+    active = False
+
+    def open(self) -> "Screen":
+        import termios, tty
+        if self.active:
+            return self
+        self.fd = sys.stdin.fileno()
+        self.saved = termios.tcgetattr(self.fd)
+        tty.setraw(self.fd)
+        self.tail = b""
+        sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1006h")
+        sys.stdout.flush()
+        self.active = True
+        return self
+
+    def close(self) -> None:
+        import termios
+        if not self.active:
+            return
+        sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?7h\x1b[?25h\x1b[?1049l")
+        sys.stdout.flush()
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+        self.active = False
+
+    def __enter__(self):
+        return self.open()
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def events(self, timeout: float | None = None) -> list[tuple]:
+        import select
+        if not self.tail and not select.select([self.fd], [], [], timeout)[0]:
+            return []
+        data = self.tail + (os.read(self.fd, 4096) if select.select([self.fd], [], [], 0)[0] else b"")
+        evs, self.tail = parse_input(data)
+        if self.tail == b"\x1b" and not select.select([self.fd], [], [], 0.03)[0]:
+            evs.append(("key", "esc"))
+            self.tail = b""
+        return evs
+
+    def draw(self, lines: list[str]) -> None:
+        sys.stdout.write("\x1b[H" + "".join(ln + "\x1b[K\r\n" for ln in lines[:-1])
+                         + (lines[-1] + "\x1b[K" if lines else "") + "\x1b[J")
+        sys.stdout.flush()
+
+
+def highlight(line: str, width: int) -> str:
+    """Selection wash across the whole row; survives the resets inside painted cells."""
+    pad = " " * max(0, width - visible_len(line))
+    reset = "\x1b[0m"
+    wash = "\x1b[48;2;{};{};{}m".format(*(int(SELECT_BG[i:i + 2], 16) for i in (1, 3, 5))) if color_on() else "\x1b[7m"
+    return wash + line.replace(reset, reset + wash) + pad + reset
+
+
+def hint_bar(hints: list[tuple[str, str, str]]) -> tuple[str, list[tuple[int, int, str]]]:
+    """[(key label, words, event)] -> (painted line, clickable [x0, x1) spans, 1-based columns)."""
+    parts, spans, col = [], [], 3
+    for label, words, ev in hints:
+        plain = label + (" " + words if words else "")
+        parts.append(paint(label, MUTED) + (" " + paint(words, FAINT) if words else ""))
+        spans.append((col, col + len(plain), ev))
+        col += len(plain) + 3
+    return "  " + "   ".join(parts), spans
+
+
+def menu(body: list[str], rows: list[int], hints: list[tuple[str, str, str]], selected: int = 0,
+         hotkeys: str = "", flash: str = "", line_keys: dict[int, str] | None = None,
+         numbered: list[int] | None = None, scr: Screen | None = None, tick: float | None = None) -> tuple:
+    """Pick one of `rows` (line indexes into body).
+
+    Returns ("pick", i), ("key", ch) for a hotkey, clicked hint or clicked `line_keys` line, ("cancel",),
+    or ("tick", i) after `tick` idle seconds so the caller can refresh (pass `scr` to keep the screen up).
+    `numbered[n-1]` is the row a typed digit n selects (default: rows in order).
+    Click or arrows / j k / wheel select; enter (or the ⏎ button) confirms; digits jump (and pick when
+    unambiguous); esc or q cancels. Buttons and rows answer the press, so a popup host that forwards
+    only presses still works; releases are ignored.
+    """
+    selected = max(0, min(selected, len(rows) - 1))
+    by_line = {ln: i for i, ln in enumerate(rows)}
+    numbered = list(range(len(rows))) if numbered is None else numbered
+    digits, top = "", 0
+    bar, spans = hint_bar(hints)
+    own = scr is None
+    scr = (scr or Screen()).open()
+    try:
+        while True:
+            cols, height = shutil.get_terminal_size((100, 24))
+            foot = ["", bar] + ([paint("  " + flash, RED)] if flash else [])
+            view = max(3, height - len(foot))
+            sel_line = rows[selected] if rows else -1
+            if not rows:
+                top = 0
+            elif sel_line < top:
+                top = 0 if selected == 0 else sel_line
+            elif sel_line >= top + view:
+                top = sel_line - view + 1
+            shown = [highlight(ln, cols) if n == sel_line else ln
+                     for n, ln in enumerate(body[top:top + view], start=top)]
+            shown += [""] * (view - len(shown))
+            bar_y = view + 2  # 1-based screen row of the hint bar
+            scr.draw(shown + foot)
+            evs = scr.events(tick)
+            if tick is not None and not evs:
+                return ("tick", selected)
+            for ev in evs:
+                if ev[0] == "mouse":
+                    _, code, x, y, down = ev
+                    line = top + y - 1
+                    if code in (64, 65):  # wheel
+                        selected = max(0, min(len(rows) - 1, selected + (1 if code == 65 else -1)))
+                    elif code == 0 and down:  # left press
+                        if y == bar_y:
+                            hit = next((e for x0, x1, e in spans if x0 <= x < x1), None)
+                            if hit:
+                                if hit == "esc":
+                                    return ("cancel",)
+                                if hit == "enter":
+                                    if rows:
+                                        return ("pick", selected)
+                                    continue
+                                return ("key", hit)
+                        elif line in (line_keys or {}) and y <= view:
+                            return ("key", line_keys[line])
+                        elif line in by_line and y <= view:
+                            selected = by_line[line]
+                    continue
+                kind, val = ev
+                if kind == "key":
+                    if val == "esc":
+                        return ("cancel",)
+                    if val == "enter":
+                        if rows:
+                            return ("pick", selected)
+                        continue
+                    step = {"up": -1, "down": 1, "backtab": -1, "tab": 1, "pgup": -view, "pgdn": view}.get(val)
+                    if step:
+                        selected = max(0, min(len(rows) - 1, selected + step))
+                    elif val == "home":
+                        selected = 0
+                    elif val == "end":
+                        selected = len(rows) - 1
+                    digits = ""
+                elif val.isdigit():
+                    digits = (digits + val).lstrip("0")
+                    if not digits:
+                        continue
+                    n = int(digits)
+                    if n > len(numbered):
+                        digits = val if 0 < int(val) <= len(numbered) else ""
+                        n = int(digits or 0)
+                    if n:
+                        selected = numbered[n - 1]
+                        if n * 10 > len(numbered):
+                            return ("pick", selected)
+                elif val in ("j", "k"):
+                    selected = max(0, min(len(rows) - 1, selected + (1 if val == "j" else -1)))
+                elif val == "q":
+                    return ("cancel",)
+                elif val.lower() in hotkeys:
+                    return ("key", val.lower())
+    finally:
+        if own:
+            scr.close()
+
+
 # --- ui --------------------------------------------------------------------------
 
 def ask(prompt: str, default: str = "") -> str:
+    """One line of text. On a terminal esc cancels (KeyboardInterrupt), like ctrl-c."""
+    if tui_ok():
+        return line_input(prompt, default)
     try:
         v = input(prompt).strip()
     except EOFError:
@@ -1070,10 +1443,51 @@ def ask(prompt: str, default: str = "") -> str:
     return v or default
 
 
-def choose(title: str, items: list[str], default: int = 0) -> int | None:
-    """Numbered choice. No fzf: --height=100% ate the popup."""
+def line_input(prompt: str, default: str = "") -> str:
+    import select, termios, tty
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    buf, tail = "", b""
+    tty.setraw(fd)
+    try:
+        while True:
+            sys.stdout.write(f"\r{prompt}{buf}\x1b[K")
+            sys.stdout.flush()
+            select.select([fd], [], [])
+            evs, tail = parse_input(tail + os.read(fd, 4096))
+            if tail == b"\x1b" and not select.select([fd], [], [], 0.03)[0]:
+                evs.append(("key", "esc"))
+                tail = b""
+            for ev in evs:
+                if ev == ("key", "esc"):
+                    raise KeyboardInterrupt
+                if ev == ("key", "enter"):
+                    return buf.strip() or default
+                if ev == ("key", "backspace"):
+                    buf = buf[:-1]
+                elif ev[0] == "char" and ev[1] == "\x15":  # ctrl-u
+                    buf = ""
+                elif ev[0] == "char" and ev[1].isprintable():
+                    buf += ev[1]
+    finally:
+        sys.stdout.write("\r\n")
+        sys.stdout.flush()
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+def choose(title: str, items: list[str], default: int = 0, intro: str = "") -> int | None:
+    """Numbered choice: the menu on a terminal (click, arrows, enter, esc), typed numbers otherwise."""
     if not items:
         return None
+    if tui_ok():
+        body = ([f"  {intro}", ""] if intro else []) + [section(title.upper())]
+        rows = []
+        for i, s_ in enumerate(items):
+            rows.append(len(body))
+            body.append(f"  {key(i + 1)}  {s_}{paint('   default', FAINT) if i == default else ''}")
+        res = menu([""] + body, [r + 1 for r in rows],
+                   [("↑↓", "move", ""), ("⏎", "pick", "enter"), ("esc", "cancel", "esc")], selected=default)
+        return res[1] if res[0] == "pick" else None
     print(f"  {title}")
     for i, s in enumerate(items):
         print(f"  {i + 1:>3}  {s}{'   (default)' if i == default else ''}")
@@ -1088,17 +1502,21 @@ def choose(title: str, items: list[str], default: int = 0) -> int | None:
 
 
 def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
+    """New with options: agent, name, model, permissions."""
     hs = [h for h in cat.get("harness", [])]
-    subject = trust_subject(root)
     with ThreadPoolExecutor(max_workers=8) as pool:
         verdicts = dict(zip([h["id"] for h in hs], pool.map(lambda h: trust_match(h["trust_tool"], root), hs)))
+    note = {"blocked": paint("  ⊘ blocked here", RED), "overprivilege": paint("  ! over-privileged here", RED)}
     rows = []
     for h in hs:
-        v = verdicts[h["id"]]
-        rows.append(f"{h['id']:<16} {GLYPH.get(h['egress'], '?')} {verdict_mark(v):<2} "
-                    f"{'' if installed(h) else '(not installed) '}{h.get('title', '')}")
-    print(f"\n  raise a harness in {tilde(root)}   subject: {subject}")
-    i = choose("harness", rows)
+        ok = installed(h)
+        hid, desc = f"{h['id']:<22}", h.get("title", "") if ok else "not installed"
+        rows.append(f"{paint(hid, SECONDARY if ok else FAINT)} {paint(desc, MUTED if ok else FAINT)}"
+                    f"{note.get(verdicts[h['id']]['verdict'], '')}")
+    intro = f"{paint('new tab in', FAINT)} {paint(tilde(root), SECONDARY)}"
+    if not tui_ok():
+        print(f"\n  {intro}")
+    i = choose("agent", rows, intro=intro)
     if i is None:
         return False
     h = hs[i]
@@ -1106,39 +1524,44 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
         print(f"  {h['id']} is not installed here"); return False
     v = verdicts[h["id"]]
     if v["verdict"] == "blocked":
-        print(f"  ⊘ refused: {h['id']} on {tilde(root)} is blocked {v['flag']} (T4 under-clearance)"); return False
+        print(f"  ⊘ refused: {h['id']} on {tilde(root)} is blocked {v['flag']}"); return False
     taken = live_names() | {r["name"] for r in load_roster()}
     base = unique_name(slug(h["id"]), taken)
-    name = slug(ask(f"  sitting (tab name) [{base}]: ", base))
-    name = unique_name(name, taken)
+    print(f"  {paint(h['id'], INK, bold=True)}  {intro}")
+    name = unique_name(slug(ask(f"  name [{base}]: ", base)), taken)
+    head = f"{paint(name, INK, bold=True)}  {paint(h['id'], MUTED)}"
     model = ""
     if h["models"]:
-        j = choose("model", h["models"] + ["(type another)"])
+        j = choose("model", h["models"] + ["(type another)"], intro=head)
         if j is None:
             return False
         model = h["models"][j] if j < len(h["models"]) else ask("  model id: ")
     lane = ""
     if not is_wrapper(h):
         default_lane = cat["defaults"].get("lane", "yellow")
-        lane_rows = [f"{ln:<7} {' '.join(cat['lanes'].get(h['kind'], {}).get(ln, [])) or '(kind default)'}" for ln in LANES]
-        j = choose("lane", lane_rows, default=LANES.index(default_lane) if default_lane in LANES else 1)
+        lane_rows = [f"{paint(f'{ln:<8}', SECONDARY)} "
+                     f"{paint(' '.join(cat['lanes'].get(h['kind'], {}).get(ln, [])) or 'agent default', MUTED)}"
+                     for ln in LANES]
+        j = choose("permissions", lane_rows, default=LANES.index(default_lane) if default_lane in LANES else 1,
+                   intro=f"{head}  {paint(model, MUTED)}")
         if j is None:
             return False
         lane = LANES[j]
     seat = seat_file(root) if h.get("seat_flag") else None
     if v["verdict"] == "overprivilege":
-        if ask(f"  ! overprivilege {v['flag']}: {h['id']} exceeds what {subject} work warrants. proceed? [y/N] ").lower() != "y":
+        if ask(f"  {paint('!', RED, bold=True)} {h['id']} is over-privileged for {trust_subject(root)} work "
+               f"({v['flag']}). start anyway? [y/N] ").lower() != "y":
             return False
     argv = build_argv(cat, h, model, lane, "", "", seat, sitting=name)
     shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
-    print(f"\n  {name}  →  {shown}\n  new tab named {name} in {tilde(root)}")
+    print(f"\n  {paint(name, INK, bold=True)}  {paint(shown, MUTED)}")
     pane = raise_harness(cat, h, name, root, ctx, model, lane, "", "", seat)
-    print(f"  raised {name} in {pane['pane_id']}")
+    print(f"  started {name} in {pane['pane_id']}")
     return True
 
 
 def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
-    """Numbered RAISE: defaults, one sitting prompt, then close."""
+    """Start new with defaults: automatic name (unless [defaults] ask_name), default permissions, open now."""
     h = harness_by_id(cat, hid)
     if not h:
         print(f"  unknown harness {hid}"); return False
@@ -1150,77 +1573,158 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
     taken = live_names() | {r["name"] for r in load_roster()}
     base = unique_name(slug(h["id"]), taken)
     lane = "" if is_wrapper(h) else cat["defaults"].get("lane", "yellow")
-    print(f"  {h['id']}{(' ' + lane) if lane else ''}  →  new tab in {tilde(root)}")
-    raw = ask(f"  sitting (tab name) [{base}]  (q = cancel): ", base)
-    if raw.lower() == "q":
-        return False
-    name = unique_name(slug(raw), taken)
+    print(f"  {paint(h['id'], INK, bold=True)}  {paint('new tab in', FAINT)} {paint(tilde(root), SECONDARY)}")
+    name = base
+    if cat["defaults"].get("ask_name"):
+        raw = ask(f"  name [{base}]  (esc = cancel): " if tui_ok() else f"  name [{base}]  (q = cancel): ", base)
+        if raw.lower() == "q":
+            return False
+        name = unique_name(slug(raw), taken)
     if v["verdict"] == "overprivilege":
-        if ask(f"  ! overprivilege {v['flag']}: proceed? [y/N] ").lower() != "y":
+        if ask(f"  {paint('!', RED, bold=True)} {h['id']} is over-privileged for {trust_subject(root)} work "
+               f"({v['flag']}). start anyway? [y/N] ").lower() != "y":
             return False
     model = h["models"][0] if h["models"] else ""
     seat = seat_file(root) if h.get("seat_flag") else None
     pane = raise_harness(cat, h, name, root, ctx, model, lane, "", "", seat)
-    print(f"  raised {name} in {pane['pane_id']}")
+    print(f"  started {name} in {pane['pane_id']}")
     return True
+
+
+PICKER_HINTS = [("⏎", "open", "enter"), ("n", "new with options", "n"), ("g", "widen", "g"),
+                ("esc", "close", "esc")]
+REFRESH_S = 2.0
+
+
+def footer(can_widen: bool = False) -> str:
+    hints = [("number", "= open"), ("[n]", "new with options")] + ([("[g]", "widen")] if can_widen else []) + [("[q]", "")]
+    return "  " + "   ".join(f"{paint(k, GOLD if k == 'number' else MUTED)}{(' ' + paint(v, FAINT)) if v else ''}"
+                            for k, v in hints)
+
+
+def remember_live(reg: dict, rows: list[dict]) -> int:
+    """Running agents go on the roster as they are seen, so they can be resumed later. No adopt step."""
+    taken = {r["name"] for r in rows}
+    added = 0
+    for r in reg["live"]:
+        if r.get("on_roster") or not r.get("session_id"):
+            continue
+        name = unique_name(slug(r["name"]) or slug(r.get("kind") or "agent"), taken)
+        rows.append({"name": name, "cwd": r["cwd"], "harness": r["harness"], "kind": r["kind"], "model": "",
+                     "lane": "", "session_id": r["session_id"], "pane_id": r["pane_id"],
+                     "workspace_id": r.get("workspace_id"), "label": r["name"], "created": now(),
+                     "last_seen": now()[:10], "source": "seen"})
+        r["on_roster"] = True
+        taken.add(name)
+        added += 1
+    if added:
+        save_roster(rows)
+    return added
 
 
 def picker(ctx: Ctx, cat: dict) -> int:
     root = ctx.cwd
-    while True:
-        rows = load_roster()
-        refresh_sessions(rows)
-        agents, panes = live_agents(), live_panes()
-        top = git_root(root)
-        wider = None
-        if top and os.path.realpath(top) != os.path.realpath(root):
-            wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
-        reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
-                             tab_label=tab_labels())
-        choices = picker_choices(reg)
-        print()
-        print(render_picker(reg, choices, top, wider))
-        print()
-        print("  number = attach or raise   [w] wizard   [a] adopt   [g] widen   [q]")
-        raw = ask("  > ").strip().lower()
-        if raw in ("", "q"):
-            return 0
-        if raw == "r":
-            continue
-        if raw == "g":
-            if top:
-                root = top
-            continue
-        if raw in ("w", "n"):  # n = old "new harness" key
-            try:
-                if wizard(ctx, cat, root):
+    tui = tui_ok()
+    scr = Screen() if tui else None
+    sel_key, sel_at, flash, expanded = "", 0, "", set()
+    verdicts: dict[tuple[str, str], dict] = {}
+    git_tops: dict[str, str | None] = {}
+
+    def matcher_for(r):
+        def m(tool):
+            if (tool, r) not in verdicts:
+                verdicts[(tool, r)] = trust_match(tool, r)
+            return verdicts[(tool, r)]
+        return m
+
+    try:
+        while True:
+            rows = load_roster()
+            refresh_sessions(rows)
+            snap = snapshot()
+            agents, panes = live_agents(), live_panes()
+            if root not in git_tops:
+                git_tops[root] = git_root(root)
+            top = git_tops[root]
+            wider = None
+            if top and os.path.realpath(top) != os.path.realpath(root):
+                wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
+            reg = build_registry(cat, root, agents, panes, rows, matcher=matcher_for(root),
+                                 tab_label=tab_labels(snap))
+            remember_live(reg, rows)
+            ws_labels = {w.get("workspace_id"): w.get("label") or "" for w in snap.get("workspaces") or []}
+            choices = picker_choices(reg, rows, ctx.workspace_id, ws_labels, expanded)
+            width = min(shutil.get_terminal_size((84, 24)).columns, 100)
+            text = render_picker(reg, choices, top, wider, width=width)
+            can_widen = bool(top and wider is not None and wider > len(reg["live"]))
+            if tui:
+                keys = [c.get("key") for c in choices]
+                selected = keys.index(sel_key) if sel_key in keys else min(sel_at, max(0, len(keys) - 1))
+                hints = [hh for hh in PICKER_HINTS if hh[2] != "g" or can_widen]
+                res = menu([""] + text.split("\n"), [c["row"] + 1 for c in choices], hints,
+                           selected=selected, hotkeys="nwag", flash=flash,
+                           line_keys={1: "g"} if can_widen else None,
+                           numbered=[i for i, c in enumerate(choices) if c.get("idx")], scr=scr, tick=REFRESH_S)
+                if res[0] in ("pick", "tick") and choices:
+                    sel_key, sel_at = choices[res[1]].get("key") or "", res[1]
+                if res[0] == "tick":
+                    continue
+                flash = ""
+                if res[0] == "cancel":
                     return 0
-            except (HerdrError, SystemExit) as e:
-                print(f"  {e}")
-            continue
-        if raw == "a":
-            try:
-                cmd_adopt(ctx, cat)
-                return 0
-            except (HerdrError, SystemExit) as e:
-                print(f"  {e}")
-            continue
-        if raw.isdigit():
-            hit = next((c for c in choices if c.get("idx") == int(raw)), None)
-            if not hit:
+                if res[0] == "pick":
+                    hit = choices[res[1]]
+                    raw = ""
+                else:
+                    hit, raw = None, res[1]
+                if hit and hit["action"] == "more":
+                    expanded.add(hit["section"])
+                    continue
+            else:
+                print()
+                print(text)
+                print()
+                print(footer(can_widen))
+                raw = ask(f"  {paint('>', GOLD, bold=True)} ").strip().lower()
+                if raw in ("", "q"):
+                    return 0
+                hit = next((c for c in choices if raw.isdigit() and c.get("idx") == int(raw)), None)
+            if raw == "r":
                 continue
+            if raw == "g":
+                root = top or root
+                sel_key = ""
+                continue
+            if raw not in ("w", "n", "a") and not hit:
+                continue
+            if scr:
+                scr.close()
+                sys.stdout.write("\x1b[H\x1b[2J")  # prompts that follow start on a clean popup
             try:
-                if hit["action"] == "focus":
+                if raw in ("w", "n"):
+                    done = wizard(ctx, cat, root)
+                elif raw == "a":
+                    cmd_adopt(ctx, cat)
+                    done = True
+                elif hit["action"] == "focus":
                     herdr("agent", "focus", hit["target"]["pane_id"])
-                    return 0
-                if hit["action"] == "enter":
+                    done = True
+                elif hit["action"] == "enter":
                     cmd_enter(ctx, cat, hit["target"]["name"], root)
-                    return 0
-                if hit["action"] == "raise":
-                    if raise_quick(ctx, cat, hit["target"]["harness"], root):
-                        return 0
+                    done = True
+                else:
+                    done = raise_quick(ctx, cat, hit["target"]["harness"], root)
+            except KeyboardInterrupt:  # esc / ctrl-c inside a prompt: back to the list
+                continue
             except (HerdrError, SystemExit) as e:
+                flash = str(e)
                 print(f"  {e}")
+                continue
+            if done:
+                return 0
+    finally:
+        if scr:
+            scr.close()
 
 
 def cmd_open(env=None) -> int:

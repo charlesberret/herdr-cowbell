@@ -7,33 +7,49 @@ missing) and rings to call them in. Per-directory herd registry behind the
 new-tab key: attach to an established harness, or raise one with the model,
 lane, and tools chosen on purpose.
 
-Press `prefix+c` in a directory and cowbell answers three questions before
-anything is created: **what is raised here** (live agents whose cwd is this
-directory or below), **what is cold here** (harnesses with a resumable
-session), and **what is absent** (every harness the constitution allows,
-with its trust verdict for this path). A number attaches or raises with
-defaults; `[w]` is the long wizard (model, lane).
+Press `prefix+c` in a directory and cowbell shows the three ways to get an
+agent there: **running here** (agents whose cwd is this directory or below),
+**resume** (ones that stopped and can pick up their session), and **start new**
+(the agents in `harnesses.toml` that are installed and allowed here, most used
+here first).
 
 ```
-cowbell  ~/code/notes/nomogenesis   subject: internal
-  git root: ~/code/notes   (4 live under it)   [g] widen
+  ~/code/notes/nomogenesis            g widen to metawork · 4 running
 
-  LIVE
-    1  nomogenesis-claude     claude       idle     w11:p3
+  Running here
+    1  nomogenesis-claude     claude      idle
+    2  philologist            grok        working  14s   in sys:clubhouse
 
-  COLD
-    2  kimi-ballots           oll-mid      cold     —
+  Resume
+    3  kimi-ballots           oll-mid     2 days ago
 
-  RAISE  (yellow · sitting asked once)
-    3  grok                   ↑!
-    4  agy                    ↑ok
-    5  oll-mid                ↑ok
-    ⊘  local-ornith
+  Start new
+    4  claude                 Claude Code
+    5  oll-mid                kimi k2.7 cloud — default coding
+    6  grok                   Grok CLI                           ! asks first
+    7  agy                    Antigravity (Gemini)
+       + 9 more
 
-  number = attach or raise   [w] wizard   [a] adopt   [g] widen   [q]
+  ⏎ open   n new with options   g widen   esc close
 ```
 
-Bare `cowbell` still prints the long registry (session ids, cwd, the absent line). `prefix+c` is the short list: a number attaches or raises, and the popup closes.
+The popup is mouse-first, like herdr: click or arrow to a row, Enter (or the ⏎
+button) to open it, Esc to close. A digit jumps straight to its row, and every
+hint in the bottom bar is clickable. It refreshes itself every two seconds.
+
+- **Enter on Start new** opens the agent at once with an automatic name
+  (`claude`, `claude-2`) and the default permissions. Set `ask_name = true` in
+  `[defaults]` to be asked for the name first (the house setting: a name claims a seat).
+- **`n` new with options** asks for agent, name, model, and permissions.
+- **Trust** appears only if `agent-deck-trust` is installed, and only as an
+  exception: `! asks first` on an over-privileged row; blocked agents are left off.
+- **Running agents are remembered** as they are seen, so they show under Resume
+  once they stop. (`cowbell adopt` still exists on the CLI.)
+- A section longer than five rows folds to four and `+ N more`.
+
+Bare `cowbell` still prints the long registry in house vocabulary (session ids,
+cwd, the absent line). Off a terminal, or with `COWBELL_PLAIN=1`, the popup falls
+back to a typed-number prompt. `NO_COLOR` turns colour off.
 
 ## Vocabulary
 
@@ -56,7 +72,7 @@ Bare `cowbell` still prints the long registry (session ids, cwd, the absent line
 ## Install (local link)
 
 ```bash
-herdr plugin link ~/code/herdr-cowbell-core
+herdr plugin link ~/code/herdr-cowbell
 herdr plugin action invoke herdr-cowbell.install-keys    # prefix+c → registry popup
 herdr server reload-config
 cowbell import-seats                                     # optional: absorb herdr-seats' roster
