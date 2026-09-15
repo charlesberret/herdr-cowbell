@@ -3,6 +3,7 @@
 
   cowbell                       on a terminal: the picker (running here · resume · start new)
                                 piped: the long registry, same as `cowbell status`
+  cowbell --version             one line, `cowbell X.Y.Z` (the plugin shim compares it)
   cowbell status                what is raised here (live · cold · absent), with trust
   cowbell <harness>             attach to that harness here, or raise it with defaults
   cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N]
@@ -40,6 +41,7 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
+__version__ = "0.3.0"  # keep equal to herdr-plugin.toml `version` (tested)
 PLUGIN_ID = "herdr-cowbell"
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 LANES = ("green", "yellow", "red")
@@ -1918,6 +1920,8 @@ NEEDS_HERDR = {"adopt", "stop"}
 def main(argv: list[str]) -> int:
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__); return 0
+    if argv and argv[0] in ("-V", "--version"):
+        print(f"cowbell {__version__}"); return 0
     if not argv:
         argv = ["picker"] if tui_ok() else ["status"]
     cmd, *rest = argv

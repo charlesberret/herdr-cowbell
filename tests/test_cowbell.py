@@ -370,6 +370,32 @@ class Standalone(unittest.TestCase):
         self.assertFalse(hm.in_herdr_pane({"TERM": "xterm"}))
 
 
+class Version(unittest.TestCase):
+    def test_version_line_is_parseable(self):
+        import io, re
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(hm.main(["--version"]), 0)
+        self.assertRegex(buf.getvalue(), r"^cowbell \d+\.\d+\.\d+\n$")
+
+    def test_version_needs_no_herdr(self):
+        orig = hm.server_up
+        hm.server_up = lambda: (_ for _ in ()).throw(AssertionError("server_up called"))
+        try:
+            import io
+            from contextlib import redirect_stdout
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(hm.main(["-V"]), 0)
+        finally:
+            hm.server_up = orig
+
+    def test_version_matches_plugin_manifest(self):
+        import tomllib
+        manifest = Path(__file__).resolve().parent.parent / "herdr-plugin.toml"
+        self.assertEqual(tomllib.loads(manifest.read_text())["version"], hm.__version__)
+
+
 class Flags(unittest.TestCase):
     def test_parse_flags(self):
         opts, pos = hm.parse_flags(["--harness", "claude", "--lane=green", "--yes", "extra", "--", "--raw"])
