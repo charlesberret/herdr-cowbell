@@ -120,6 +120,14 @@ def plugin_root() -> Path:
     return Path(os.environ.get("HERDR_PLUGIN_ROOT") or Path(__file__).resolve().parent)
 
 
+def seed_path() -> Path | None:
+    """The shipped harnesses.toml: beside a checkout or plugin, or share/cowbell/ when pip/uv installed it."""
+    for p in (plugin_root() / "harnesses.toml", Path(sys.prefix) / "share" / "cowbell" / "harnesses.toml"):
+        if p.is_file():
+            return p
+    return None
+
+
 SCHEMA = 1  # catalog and roster format this cowbell reads and writes
 
 
@@ -189,8 +197,8 @@ def roster_path() -> Path:
 def catalog_path() -> Path:
     p = config_dir() / "harnesses.toml"
     if not migrate_file(p, legacy_config_dir() / "harnesses.toml") and not p.exists():
-        seed = plugin_root() / "harnesses.toml"
-        if seed.exists():
+        seed = seed_path()
+        if seed:
             shutil.copy2(seed, p)
     return p
 
@@ -1987,7 +1995,8 @@ def main(argv: list[str]) -> int:
     raise SystemExit(f"cowbell: unknown command or harness {cmd!r} (see: cowbell catalog)")
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Console-script entry (`cowbell` when installed with pip or uv)."""
     try:
         sys.exit(main(sys.argv[1:]))
     except HerdrError as e:
@@ -1995,3 +2004,7 @@ if __name__ == "__main__":
         sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(130)
+
+
+if __name__ == "__main__":
+    cli()
