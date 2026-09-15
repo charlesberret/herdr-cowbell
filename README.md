@@ -54,6 +54,22 @@ originals and a dated backup, and records it in `~/.config/cowbell/.migrated_fro
 Both files carry `schema = 1`; a cowbell that finds a newer schema reads the file but
 will not overwrite it.
 
+**Places.** A directory can have its own rules, declared in `~/.config/cowbell/harnesses.toml`:
+
+```toml
+[defaults]
+untitled_place = "lobby"          # a sitting started from ~ opens here instead
+
+[places.lobby]
+cwd = "~/code/agent-lobby"
+workspace_label = "lobby"         # herdr workspace its sittings open in (created if missing)
+allow_harness = ["claude", "grok"]
+lane = "yellow"
+```
+
+Anything started at or below `cwd` opens in that workspace, Start new lists only the
+allowed agents, and `cowbell new --place lobby` targets it from anywhere.
+
 Bare `cowbell` still prints the long registry in house vocabulary (session ids,
 cwd, the absent line). Off a terminal, or with `COWBELL_PLAIN=1`, the popup falls
 back to a typed-number prompt. `NO_COLOR` turns colour off.

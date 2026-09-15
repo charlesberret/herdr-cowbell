@@ -409,6 +409,111 @@ class Paths(unittest.TestCase):
             hm.check_writable(cat["schema"], "harnesses.toml")
 
 
+class CtxCwd(unittest.TestCase):
+    def test_command_in_a_pane_uses_its_own_cwd(self):
+        orig = hm.herdr
+        hm.herdr = lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked herdr for the pane cwd"))
+        try:
+            ctx = hm.Ctx.from_env({"HERDR_PANE_ID": "w1:p1", "HERDR_WORKSPACE_ID": "w1"})
+        finally:
+            hm.herdr = orig
+        self.assertEqual(ctx.cwd, os.path.realpath(os.getcwd()))
+
+    def test_plugin_action_asks_herdr_for_the_caller_pane(self):
+        orig = hm.herdr
+        hm.herdr = lambda *a, **k: {"pane": {"cwd": "/"}}
+        try:
+            ctx = hm.Ctx.from_env({"HERDR_PANE_ID": "w1:p1", "HERDR_PLUGIN_ROOT": "/plugin"})
+        finally:
+            hm.herdr = orig
+        self.assertEqual(ctx.cwd, "/")
+
+
+class Places(unittest.TestCase):
+    """[places]: a directory's pen, allowed harnesses and lane; ~ goes to the untitled place (LAB-262)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.realpath(self.tmp.name)
+        self.pad = os.path.join(self.home, "cloud", "git-projects", "agent-lobby")
+        os.makedirs(self.pad)
+        self.cat = {**CAT, "defaults": {"lane": "yellow", "untitled_place": "lobby"},
+                    "places": {"lobby": {"cwd": self.pad, "workspace_label": "lobby",
+                                         "allow_harness": ["claude", "grok"], "lane": "green"}}}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_home_remaps_to_untitled_place(self):
+        root, place, remapped = hm.resolve_root(self.cat, self.home, home=self.home)
+        self.assertEqual((root, place["name"], remapped), (self.pad, "lobby", True))
+
+    def test_no_untitled_place_means_no_remap(self):
+        cat = {**self.cat, "defaults": {"lane": "yellow"}}
+        self.assertEqual(hm.resolve_root(cat, self.home, home=self.home), (self.home, None, False))
+
+    def test_place_holds_its_subdirectories_only(self):
+        self.assertEqual(hm.resolve_root(self.cat, os.path.join(self.pad, "visitors"), home=self.home)[1]["name"],
+                         "lobby")
+        self.assertIsNone(hm.resolve_root(self.cat, os.path.join(self.home, "cloud"), home=self.home)[1])
+
+    def test_scoped_catalog_filters_harnesses_and_sets_lane(self):
+        scoped = hm.scoped_catalog(self.cat, hm.places(self.cat)["lobby"])
+        self.assertEqual([h["id"] for h in scoped["harness"]], ["claude", "grok"])
+        self.assertEqual(scoped["defaults"]["lane"], "green")
+        self.assertEqual(len(self.cat["harness"]), len(CAT["harness"]))          # original untouched
+        reg = hm.build_registry(scoped, self.pad, [], [], [], matcher=lambda t: {"verdict": "ok"})
+        self.assertEqual({a["harness"] for a in reg["startable"]}, {"claude", "grok"})
+
+    def test_new_refuses_a_harness_the_place_does_not_allow(self):
+        with self.assertRaises(SystemExit) as e:
+            hm.cmd_new(hm.Ctx(cwd=self.pad), self.cat, "codex", place="lobby")
+        self.assertIn("may not start in place lobby", str(e.exception))
+        with self.assertRaises(SystemExit):
+            hm.cmd_new(hm.Ctx(cwd=self.pad), self.cat, "grok", place="nowhere")
+
+    def _raise(self, existing):
+        calls = []
+
+        def fake_herdr(*args, expect_json=True):
+            calls.append(args)
+            if args[:2] == ("workspace", "list"):
+                return {"workspaces": existing}
+            if args[:2] == ("workspace", "create"):
+                return {"tab": {"tab_id": "wL:t1", "label": "lobby"},
+                        "root_pane": {"pane_id": "wL:p1", "tab_id": "wL:t1", "workspace_id": "wL"}}
+            if args[:2] == ("tab", "create"):
+                return {"root_pane": {"pane_id": "wL:p2", "tab_id": "wL:t2", "workspace_id": args[3]}}
+            return {}
+        saved = (hm.herdr, hm.start_native, hm.save_roster, hm.load_roster)
+        hm.herdr = fake_herdr
+        hm.start_native = lambda *a, **k: {}
+        hm.save_roster = lambda rows: None
+        hm.load_roster = lambda: []
+        try:
+            pane = hm.raise_harness(self.cat, hm.harness_by_id(self.cat, "grok"), "grok-3", self.pad,
+                                    hm.Ctx(workspace_id="wK", cwd=self.home))
+        finally:
+            hm.herdr, hm.start_native, hm.save_roster, hm.load_roster = saved
+        return pane, calls
+
+    def test_pen_is_created_when_missing(self):
+        pane, calls = self._raise([{"workspace_id": "wK", "label": "home ~"}])
+        create = next(c for c in calls if c[:2] == ("workspace", "create"))
+        self.assertEqual(create[create.index("--label") + 1], "lobby")
+        self.assertEqual(create[create.index("--cwd") + 1], self.pad)
+        self.assertEqual(pane["workspace_id"], "wL")
+        self.assertFalse(any(c[:2] == ("tab", "create") and "wK" in c for c in calls))   # not the caller's home ~
+
+    def test_pen_is_reused_when_present(self):
+        pane, calls = self._raise([{"workspace_id": "wK", "label": "home ~"},
+                                   {"workspace_id": "w1B", "label": "proj:agent-lobby"},
+                                   {"workspace_id": "wL", "label": "lobby"}])
+        tab = next(c for c in calls if c[:2] == ("tab", "create"))
+        self.assertEqual(tab[tab.index("--workspace") + 1], "wL")
+        self.assertFalse(any(c[:2] == ("workspace", "create") for c in calls))
+
+
 class Standalone(unittest.TestCase):
     PS = """\
     1     0 ??       /sbin/launchd

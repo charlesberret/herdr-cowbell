@@ -6,7 +6,7 @@
   cowbell --version             one line, `cowbell X.Y.Z` (the plugin shim compares it)
   cowbell status                what is raised here (live · cold · absent), with trust
   cowbell <harness>             attach to that harness here, or raise it with defaults
-  cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N]
+  cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P]
   cowbell enter <name>          focus if live, else resume
   cowbell adopt [name]          put the focused agent pane on the roster (herdr)
   cowbell stop <name>           ctrl-c the harness; roster keeps it (herdr)
@@ -266,7 +266,9 @@ class Ctx:
             data = {}
         cwd = data.get("focused_pane_cwd") or data.get("workspace_cwd")
         pane_id = data.get("focused_pane_id") or env.get("HERDR_PANE_ID")
-        if not cwd and pane_id:
+        # A plugin action runs in the plugin root, so ask herdr where the caller's pane is. A command typed
+        # in a pane runs where it was typed: the process cwd is the truth, even when the pane's shell moved.
+        if not cwd and pane_id and env.get("HERDR_PLUGIN_ROOT"):
             try:
                 cwd = (herdr("pane", "get", pane_id).get("pane") or {}).get("cwd")
             except (HerdrError, OSError):
@@ -401,6 +403,47 @@ def load_catalog() -> dict:
         if "command" in h:
             h["command"] = os.path.expanduser(h["command"])
     return cat
+
+
+# A place is a directory with its own rules: the herdr workspace ("pen") its sittings open in,
+# which harnesses may start there, and a default lane. Declared as [places.<name>] in the
+# config-dir catalog; [defaults] untitled_place names the place a sitting from ~ goes to.
+
+def places(cat: dict) -> dict[str, dict]:
+    out = {}
+    for name, p in (cat.get("places") or {}).items():
+        if isinstance(p, dict) and p.get("cwd"):
+            out[name] = {**p, "name": name, "cwd": os.path.realpath(os.path.expanduser(str(p["cwd"])))}
+    return out
+
+
+def place_for(cat: dict, root: str) -> dict | None:
+    """The deepest place whose directory holds root."""
+    hits = [p for p in places(cat).values() if at_or_beneath(os.path.realpath(root), p["cwd"])]
+    return max(hits, key=lambda p: len(p["cwd"]), default=None)
+
+
+def resolve_root(cat: dict, root: str, home: str | None = None) -> tuple[str, dict | None, bool]:
+    """(root, place, remapped). A sitting from ~ never lands in ~ when an untitled place is declared."""
+    home = os.path.realpath(os.path.expanduser(home or "~"))
+    if os.path.realpath(root) == home:
+        pl = places(cat).get(cat.get("defaults", {}).get("untitled_place") or "")
+        if pl:
+            return pl["cwd"], pl, True
+    return root, place_for(cat, root), False
+
+
+def scoped_catalog(cat: dict, place: dict | None) -> dict:
+    """The catalog as seen from a place: only its allowed harnesses, its default lane."""
+    if not place:
+        return cat
+    out = {**cat, "defaults": {**cat.get("defaults", {})}}
+    if place.get("lane"):
+        out["defaults"]["lane"] = place["lane"]
+    allow = place.get("allow_harness")
+    if allow is not None:
+        out["harness"] = [h for h in cat.get("harness", []) if h["id"] in set(allow)]
+    return out
 
 
 def harness_by_id(cat: dict, hid: str) -> dict | None:
@@ -757,7 +800,7 @@ def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wi
                   width: int = 84) -> str:
     """New-tab surface: running here, resume, start new. Numbers are for rows you can open."""
     path = tilde(reg["root"])
-    right = ""
+    right = reg.get("place_note", "")
     if git_top and wider is not None and wider > len(reg["live"]):
         right = f"g widen to {os.path.basename(git_top.rstrip('/'))} · {wider} running"
     gap = width - 2 - len(path) - len(right)
@@ -848,12 +891,17 @@ def pick_workspace(ctx: Ctx, root: str) -> str | None:
     return ctx.workspace_id
 
 
-def create_tab(workspace_id: str | None, root: str, label: str) -> dict:
+def workspace_by_label(label: str) -> str | None:
+    return next((w["workspace_id"] for w in workspaces() if w.get("label") == label), None)
+
+
+def create_tab(workspace_id: str | None, root: str, label: str, workspace_label: str | None = None) -> dict:
     """New tab labelled with the sitting. Identity is the tab, never pane --title / rename."""
     if workspace_id:
         res = herdr("tab", "create", "--workspace", workspace_id, "--cwd", root, "--label", label, "--no-focus")
     else:
-        res = herdr("workspace", "create", "--cwd", root, "--label", os.path.basename(root) or root, "--no-focus")
+        res = herdr("workspace", "create", "--cwd", root, "--label", workspace_label or os.path.basename(root) or root,
+                    "--no-focus")
         tab = res.get("tab") or {}
         tid = tab.get("tab_id")
         if tid and (tab.get("label") or "") != label:
@@ -920,8 +968,11 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
                   seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None,
                   focus: bool = True) -> dict:
     argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
-    ws = pick_workspace(ctx, root)
-    pane = create_tab(ws, root, name)
+    place = place_for(cat, root)
+    if place and place.get("workspace_label"):  # a place's sittings open in its own pen, not the caller's
+        pane = create_tab(workspace_by_label(place["workspace_label"]), root, name, place["workspace_label"])
+    else:
+        pane = create_tab(pick_workspace(ctx, root), root, name)
     pid = pane["pane_id"]
     launched_session = ""
     try:
@@ -1118,7 +1169,8 @@ def launch(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", *args, **kw):
 # --- commands ------------------------------------------------------------------
 
 def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None) -> dict:
-    root = root or ctx.cwd
+    root, place, _ = resolve_root(cat, root or ctx.cwd)
+    cat = scoped_catalog(cat, place)
     rows = load_roster()
     refresh_sessions(rows)
     agents = live_agents() + (agent_processes() if ctx.mode == "here" else [])
@@ -1233,8 +1285,19 @@ def gate(cat_h: dict, root: str, interactive: bool, assume_yes: bool) -> dict:
 
 
 def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="", name="", no_seat=False,
-            assume_yes=False, root: str | None = None, extra: list[str] | None = None, focus: bool = True) -> None:
-    root = root or ctx.cwd
+            assume_yes=False, root: str | None = None, extra: list[str] | None = None, focus: bool = True,
+            place: str = "") -> None:
+    if place:
+        pl = places(cat).get(place)
+        if not pl:
+            raise SystemExit(f"cowbell: no place {place!r} in {catalog_path()} (have: {', '.join(places(cat)) or 'none'})")
+        root = pl["cwd"]
+    root, pl, _ = resolve_root(cat, root or ctx.cwd)
+    scoped = scoped_catalog(cat, pl)
+    if pl and harness_by_id(cat, hid) and not harness_by_id(scoped, hid):
+        raise SystemExit(f"cowbell: {hid} may not start in place {pl['name']} "
+                         f"(allowed: {', '.join(pl.get('allow_harness') or []) or 'none'})")
+    cat = scoped
     h = harness_by_id(cat, hid)
     if not h:
         raise SystemExit(f"cowbell: unknown harness {hid!r} (see: cowbell catalog)")
@@ -1254,8 +1317,8 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
 
 def cmd_dispatch(ctx: Ctx, cat: dict, hid: str, assume_yes: bool) -> None:
     """`cowbell claude`: attach to that harness here if one exists, else raise it with defaults."""
-    root = ctx.cwd
-    reg = build_registry(cat, root, live_agents(), live_panes(), load_roster(), matcher=lambda _tool: {"verdict": "unknown"})
+    root, place, _ = resolve_root(cat, ctx.cwd)
+    reg = build_registry(scoped_catalog(cat, place), root, live_agents(), live_panes(), load_roster(), matcher=lambda _tool: {"verdict": "unknown"})
     for r in reg["live"]:
         if r["harness"] == hid or r["kind"] == hid:
             herdr("agent", "focus", r["pane_id"])
@@ -1827,7 +1890,8 @@ def remember_live(reg: dict, rows: list[dict]) -> int:
 
 
 def picker(ctx: Ctx, cat: dict) -> int:
-    root = ctx.cwd
+    full_cat = cat
+    root, _, remapped = resolve_root(full_cat, ctx.cwd)
     tui = tui_ok()
     scr = Screen() if tui else None
     here = ctx.mode == "here"
@@ -1845,6 +1909,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
 
     try:
         while True:
+            place = place_for(full_cat, root)
+            cat = scoped_catalog(full_cat, place)  # flows below (wizard, quick start) see only this place's harnesses
             rows = load_roster()
             if herdr_up:
                 refresh_sessions(rows)
@@ -1859,6 +1925,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
             reg = build_registry(cat, root, agents, panes, rows, matcher=matcher_for(root),
                                  tab_label=tab_labels(snap))
+            if place:
+                reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)
             ws_labels = {w.get("workspace_id"): w.get("label") or "" for w in snap.get("workspaces") or []}
             choices = picker_choices(reg, rows, ctx.workspace_id, ws_labels, expanded)
@@ -2024,7 +2092,8 @@ def main(argv: list[str]) -> int:
             raise SystemExit("new --harness <id> [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--no-seat] [--yes]")
         cmd_new(ctx, cat, hid, opts.get("model", ""), opts.get("lane", ""), opts.get("allow", ""), opts.get("deny", ""),
                 opts.get("name", ""), bool(opts.get("no-seat")), bool(opts.get("yes")), opts.get("root"),
-                extra=pos[1:] if pos and pos[0] == hid else pos, focus=not opts.get("no-focus"))
+                extra=pos[1:] if pos and pos[0] == hid else pos, focus=not opts.get("no-focus"),
+                place=opts.get("place", ""))
         return 0
     if harness_by_id(cat, cmd):
         cmd_dispatch(ctx, cat, cmd, bool(opts.get("yes"))); return 0
