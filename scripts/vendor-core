@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Copy the cowbell core into vendor/ and pin the plugin to it.
+
+    scripts/vendor-core [CORE_TREE]      (default: the core tree, or $COWBELL_CORE_TREE)
+
+Copies cowbell.py and the seed harnesses.toml, records the source commit in
+vendor/VENDORED.json, and sets herdr-plugin.toml's version to the core's. The
+vendored files are never edited by hand: change the core, then vendor again.
+"""
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+PLUGIN = Path(__file__).resolve().parent.parent
+PLUGIN_ONLY = ("keys_install_text", "def cmd_open", "picker_open_args", "def import_seats", "def cmd_adopt")
+
+
+def main(argv: list[str]) -> int:
+    core = Path(argv[0] if argv else os.environ.get("COWBELL_CORE_TREE", "the core tree")).expanduser()
+    src = core / "cowbell.py"
+    if not src.is_file():
+        print(f"vendor-core: no cowbell.py in {core}", file=sys.stderr)
+        return 2
+    text = src.read_text()
+    leaked = [name for name in PLUGIN_ONLY if name in text]
+    if leaked:
+        print(f"vendor-core: {src} carries plugin-only code ({', '.join(leaked)}); refusing", file=sys.stderr)
+        return 3
+    m = re.search(r'^__version__ = "([^"]+)"', text, re.M)
+    if not m:
+        print("vendor-core: no __version__ in the core", file=sys.stderr)
+        return 2
+    version = m.group(1)
+    git = lambda *a: subprocess.run(["git", "-C", str(core), *a], capture_output=True, text=True).stdout.strip()
+    commit, dirty = git("rev-parse", "--short", "HEAD"), bool(git("status", "--porcelain", "--", "cowbell.py", "harnesses.toml"))
+    vendor = PLUGIN / "vendor"
+    vendor.mkdir(exist_ok=True)
+    shutil.copy2(src, vendor / "cowbell.py")
+    shutil.copy2(core / "harnesses.toml", vendor / "harnesses.toml")
+    (vendor / "VENDORED.json").write_text(json.dumps({
+        "version": version, "commit": commit, "dirty": dirty, "source": str(core),
+        "at": dt.datetime.now().isoformat(timespec="seconds")}, indent=2) + "\n")
+    manifest = PLUGIN / "herdr-plugin.toml"
+    mtext = manifest.read_text()
+    manifest.write_text(re.sub(r'^version = "[^"]*"', f'version = "{version}"', mtext, count=1, flags=re.M))
+    print(f"vendored cowbell {version} from {core} @ {commit}{' (dirty)' if dirty else ''}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

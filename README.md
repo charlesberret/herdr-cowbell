@@ -105,40 +105,27 @@ cowbell import-seats                                     # optional: absorb herd
 comment), appends one marked `[[keys.command]]` block, backs up `config.toml`
 first, rewrites it atomically, and is reversible with `uninstall-keys`.
 
-## Outside herdr
+## What this plugin is
 
-The same picker runs in any terminal: type `cowbell`. It needs no herdr server.
+A thin herdr skin over the cowbell core (`the core tree`, the `cowbell`
+command). This tree holds only what herdr needs:
 
-- **Running here** lists herdr's agents for this directory when a herdr server is
-  up (opening one focuses it in herdr), plus agent CLIs found running in plain
-  terminals: processes on a tty whose working directory is here, skipping anything
-  under herdr or nested inside another agent. Those rows say where they run
-  (`on ttys012`); cowbell can't switch to another terminal window.
-- **Start new** and **Resume** hand this terminal to the agent (`exec`), in the
-  chosen directory. Quit the agent and you are back at your shell.
-- **Resume** lists only sessions cowbell can actually resume. Claude started here is
-  given its session id up front (`session_id_flag = "--session-id"`) and its name
-  (`name_flag = "--name"`); agents without such a flag start fresh and are not listed.
-- Inside a herdr pane, bare `cowbell` behaves like the popup and opens new tabs.
+- `herdr-plugin.toml`: the `open`, `adopt`, `install-keys` and `uninstall-keys`
+  actions and the `picker` popup.
+- `herdr_cowbell.py`: the plugin commands (`open`, `adopt`, `stop`, `import-seats`,
+  `keys install|uninstall`).
+- `vendor/`: a pinned copy of the core (`cowbell.py`, its seed `harnesses.toml`,
+  `VENDORED.json` with the source commit). Never edited by hand.
+- `bin/cowbell`: the shim every manifest command runs.
 
-## CLI
+**Which core runs.** For the picker and every non-plugin command, a `cowbell` on your
+PATH whose `--version` is at least the vendored one runs; otherwise the vendored copy
+does. Upgrading the `cowbell` command therefore upgrades `prefix+c` too. The shared
+catalog and roster carry `schema = 1`, so an older core never overwrites what a newer
+one wrote.
 
-```
-cowbell                      the picker (on a terminal); piped, the long registry
-cowbell status               long registry: live · cold · absent, session ids, trust
-cowbell claude               attach to a claude harness here, or raise one with defaults
-cowbell new --harness oll-mid --name kimi-notes
-cowbell new --harness claude --model claude-opus-5 --lane green --allow Read,Grep --yes
-cowbell enter <name>         focus if live, else resume (new tab in herdr, this terminal outside)
-cowbell adopt [name]         put the focused agent pane on the roster (herdr)
-cowbell stop <name>          ctrl-c; the roster keeps the row (herdr)
-cowbell list [--all]
-cowbell catalog              every harness with egress, installed?, trust badge
-```
-
-The house launcher is `code/bin/cowbell` → `bin/cowbell` here, which picks a
-python ≥ 3.11 (tomllib) and follows symlinks. macOS `/usr/bin/python3` is 3.9 and
-must not run this.
+The plugin and the `cowbell` command read the same `~/.config/cowbell/harnesses.toml`
+and `~/.local/state/cowbell/roster.json`.
 
 ## How a harness is raised
 
@@ -175,9 +162,12 @@ A fresh Claude in a never-trusted directory will sit `blocked` at Claude's own
 
 ## Development
 
+Core changes happen in `the core tree`. To pick them up here:
+
 ```bash
-python3 -m unittest discover -s tests -v
+scripts/vendor-core                          # copies the core, pins its commit, sets the plugin version
+python3 -m unittest discover -s tests -v     # packaging tests: manifest, vendor, which core, fresh checkout
 herdr plugin log list --plugin herdr-cowbell
 ```
 
-Stdlib only.
+`vendor-core` refuses a core that carries plugin-only code. Stdlib only.

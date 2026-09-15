@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cowbell — call up a sitting here. Herdr plugin herdr-cowbell, and a standalone TUI.
+"""cowbell — pick an agent for this directory: running here, resume, or start new.
 
   cowbell                       on a terminal: the picker (running here · resume · start new)
                                 piped: the long registry, same as `cowbell status`
@@ -8,17 +8,14 @@
   cowbell <harness>             attach to that harness here, or raise it with defaults
   cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P]
   cowbell enter <name>          focus if live, else resume
-  cowbell adopt [name]          put the focused agent pane on the roster (herdr)
-  cowbell stop <name>           ctrl-c the harness; roster keeps it (herdr)
+  cowbell list [--all]          roster rows (default: this directory)
+  cowbell catalog               every harness: kind, egress, installed, trust badge
 
 Inside a herdr pane, starting or resuming opens a new herdr tab. Anywhere else it
 runs the agent in this terminal, and Running here also lists agent processes found
 by working directory.
 
-  cowbell list [--all]          roster rows (default: this directory)
-  cowbell import-seats          pull herdr-seats' seats.json into the roster
-  cowbell keys install|uninstall
-  cowbell open | picker         plugin entry points (keybind / popup)
+The herdr plugin (herdr-cowbell) adds prefix+c, adopt, stop and import-seats on top of this.
 
 Stdlib only; python >= 3.11 (tomllib). fzf is optional.
 """
@@ -41,21 +38,15 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-__version__ = "0.3.0"  # keep equal to herdr-plugin.toml `version` (tested)
-PLUGIN_ID = "herdr-cowbell"
+__version__ = "0.3.0"
+PLUGIN_ID = "herdr-cowbell"  # only to find config and state that 0.1–0.3 kept in herdr's plugin dirs
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 LANES = ("green", "yellow", "red")
 READY = {"idle", "done"}
 SHELLS = {"zsh", "bash", "fish", "sh", "dash", "ksh"}
 GLYPH = {"local": "⌂", "mesh": "⌂", "vendor": "↑"}  # ⌂ ↑
 DASH = "—"
-HERDR_CONFIG = Path("~/.config/herdr/config.toml").expanduser()
-SEATS_JSON = Path("~/.config/herdr/plugins/config/herdr-seats/seats.json").expanduser()
 GROK_AGENTS_DIR = Path("~/.grok/agents").expanduser()
-CTX_KEYS = (
-    "workspace_id", "workspace_cwd", "tab_id", "tab_label",
-    "focused_pane_id", "focused_pane_cwd", "focused_pane_agent",
-)
 
 
 class HerdrError(RuntimeError):
@@ -244,43 +235,6 @@ class Ctx:
         )
 
 
-def invocation_ctx(env=None) -> dict:
-    """The caller's directory and workspace — not the picker popup's own pane."""
-    env = os.environ if env is None else env
-    raw = env.get("HERDR_PLUGIN_CONTEXT_JSON") or env.get("COWBELL_CTX") or "{}"
-    try:
-        parsed = json.loads(raw)
-        data = parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
-        data = {}
-    out = {k: data[k] for k in CTX_KEYS if data.get(k)}
-    if not out.get("workspace_id") and env.get("HERDR_WORKSPACE_ID"):
-        out["workspace_id"] = env["HERDR_WORKSPACE_ID"]
-    if not out.get("tab_id") and env.get("HERDR_TAB_ID"):
-        out["tab_id"] = env["HERDR_TAB_ID"]
-    pane_id = out.get("focused_pane_id") or env.get("HERDR_PANE_ID")
-    if pane_id:
-        out["focused_pane_id"] = pane_id
-    if not out.get("focused_pane_cwd"):
-        cwd = out.get("workspace_cwd")
-        if not cwd and pane_id:
-            cwd = herdr_pane_cwd(pane_id)
-        if cwd:
-            out["focused_pane_cwd"] = cwd
-    return out
-
-
-def picker_open_args(ctx: dict) -> list[str]:
-    args = [
-        "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "picker", "--focus",
-        "--env", "COWBELL_CTX=" + json.dumps(ctx),
-        "--env", "COWBELL_MODE=tab",
-    ]
-    if ctx.get("focused_pane_cwd"):
-        args += ["--cwd", ctx["focused_pane_cwd"]]
-    return args
-
-
 # --- scope -----------------------------------------------------------------
 
 def at_or_beneath(path: str, root: str) -> bool:
@@ -449,29 +403,6 @@ def save_roster(rows: list[dict]) -> None:
 
 def roster_here(rows: list[dict], root: str) -> list[dict]:
     return [r for r in rows if r.get("cwd") and at_or_beneath(r["cwd"], root)]
-
-
-def import_seats(seats_path: Path = SEATS_JSON) -> int:
-    if not seats_path.exists():
-        return 0
-    data = json.loads(seats_path.read_text())
-    seats = data.get("seats", data) if isinstance(data, dict) else data
-    rows = load_roster()
-    names = {r["name"] for r in rows}
-    added = 0
-    for s in seats:
-        if s.get("name") in names:
-            continue
-        kind = s.get("kind") or ""
-        rows.append({
-            "name": s["name"], "cwd": s.get("cwd", ""), "harness": kind, "kind": kind,
-            "model": "", "lane": "", "session_id": s.get("session_id", ""),
-            "pane_id": s.get("pane_id"), "workspace_id": s.get("workspace_id"),
-            "label": s.get("label", s["name"]), "created": now(), "source": "herdr-seats",
-        })
-        names.add(s["name"]); added += 1
-    save_roster(rows)
-    return added
 
 
 def now() -> str:
@@ -1265,19 +1196,6 @@ def focus_agent(pane_id: str) -> None:
     herdr("agent", "focus", pane_id)
 
 
-def agent_info(target: str) -> dict:
-    info = herdr("agent", "get", target)
-    return info.get("agent") or info
-
-
-def send_ctrl_c(pane_id: str) -> None:
-    herdr("agent", "send-keys", pane_id, "ctrl+c")
-
-
-def open_plugin_pane(args: list[str]) -> dict:
-    return herdr(*args)
-
-
 class HerdrLive(LiveSource):
     herdr = True
 
@@ -1347,49 +1265,6 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
     pane = launch(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""), r.get("lane", ""),
                          r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""))
     print(f"resumed {r['name']} ({h['id']}) in {pane['pane_id']}")
-
-
-def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None) -> None:
-    pane_id = ctx.pane_id
-    if not pane_id:
-        focused = [a for a in ctx.live.agents() if a.get("focused")]
-        pane_id = focused[0]["pane_id"] if focused else None
-    if not pane_id:
-        raise SystemExit("cowbell: no focused pane to adopt")
-    a = agent_info(pane_id)
-    kind = a.get("agent") or ""
-    if not kind:
-        raise SystemExit(f"cowbell: pane {pane_id} hosts no recognized agent")
-    sitting = tab_labels(ctx.live.snapshot()).get(a.get("tab_id"), "")
-    title = a.get("terminal_title_stripped") or ""
-    noisy = (not title or title.startswith("-") or " - grok " in title.lower()
-             or "waiting" in title.lower() or "running:" in title.lower())
-    base = slug(name or sitting or (title if not noisy else kind))
-    rows = load_roster()
-    nm = unique_name(base, {r["name"] for r in rows if r.get("pane_id") != a.get("pane_id")})
-    rows = [r for r in rows if r.get("pane_id") != a.get("pane_id")]
-    h = harness_by_id(cat, kind)
-    rows.append({
-        "name": nm, "cwd": a.get("cwd") or ctx.cwd, "harness": h["id"] if h else kind, "kind": kind,
-        "model": "", "lane": "", "session_id": (a.get("agent_session") or {}).get("value") or "",
-        "pane_id": a.get("pane_id") or pane_id, "tab_id": a.get("tab_id"), "workspace_id": a.get("workspace_id"),
-        "label": title or nm, "created": now(), "source": "adopt",
-    })
-    save_roster(rows)
-    print(f"adopted {nm}  {kind}  {tilde(a.get('cwd') or ctx.cwd)}")
-
-
-def cmd_stop(ctx: Ctx, name: str) -> None:
-    rows = load_roster()
-    hits = [r for r in rows if r["name"] == name]
-    if not hits:
-        raise SystemExit(f"cowbell: no roster entry {name!r}")
-    live = ctx.live.agent(name) or {}
-    pid = live.get("pane_id") or hits[0].get("pane_id")
-    if not pid:
-        raise SystemExit(f"cowbell: {name} is not live")
-    send_ctrl_c(pid)
-    print(f"ctrl+c → {name} ({pid})")
 
 
 def cmd_list(ctx: Ctx, all_rows: bool) -> None:
@@ -1476,87 +1351,7 @@ def cmd_catalog(cat: dict) -> None:
               f"{'yes' if installed(h) else 'no':<9} {trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
 
 
-# --- keybinding install (text-level, atomic, reversible) ---------------------------------
-
-MARK = "# cowbell"
-BLOCK_BEGIN, BLOCK_END = "# >>> herdr-cowbell keybindings >>>", "# <<< herdr-cowbell keybindings <<<"
-SAVED = "# cowbell saved: "
-BLOCK = [
-    BLOCK_BEGIN,
-    "[[keys.command]]",
-    'key = "prefix+c"',
-    'type = "plugin_action"',
-    'command = "herdr-cowbell.open"',
-    'description = "cowbell: new tab from the herd registry"',
-    BLOCK_END,
-]
-
-
-def _strip_block(lines: list[str]) -> list[str]:
-    out, inside = [], False
-    begins = {BLOCK_BEGIN, "# >>> herdmark keybindings >>>"}
-    ends = {BLOCK_END, "# <<< herdmark keybindings <<<"}
-    for ln in lines:
-        s = ln.strip()
-        if s in begins:
-            inside = True; continue
-        if s in ends:
-            inside = False; continue
-        if not inside:
-            out.append(ln)
-    return out
-
-
-def keys_install_text(text: str) -> str:
-    """Blank the built-in new_tab (saving the original) and bind prefix+c to herdr-cowbell.open."""
-    lines = _strip_block(text.splitlines())
-    old_mark, old_saved = "# herdmark", "# herdmark saved: "
-    lines = [ln for ln in lines if not ln.rstrip().endswith(MARK) and not ln.rstrip().endswith(old_mark)]
-    for i, ln in enumerate(lines):
-        s = ln.strip()
-        if s.startswith(SAVED):
-            lines[i] = s[len(SAVED):]
-        elif s.startswith(old_saved):
-            lines[i] = s[len(old_saved):]
-    managed = f'new_tab = ""  {MARK}'
-    keys_at = next((i for i, ln in enumerate(lines) if ln.strip() == "[keys]"), None)
-    if keys_at is None:
-        # TOML: the [keys] table must precede any [[keys.command]] entry. Insert it
-        # before that entry's attached comment lines, and add no blank lines of our
-        # own, so uninstall (remove the marked lines) restores the file byte-for-byte.
-        first_cmd = next((i for i, ln in enumerate(lines) if ln.strip() == "[[keys.command]]"), None)
-        at = first_cmd if first_cmd is not None else len(lines)
-        while at > 0 and lines[at - 1].strip().startswith("#"):
-            at -= 1
-        lines[at:at] = [f"[keys]  {MARK}", managed]
-    else:
-        end = next((i for i in range(keys_at + 1, len(lines)) if lines[i].strip().startswith("[")), len(lines))
-        hit = next((i for i in range(keys_at + 1, end) if re.match(r"^\s*new_tab\s*=", lines[i])), None)
-        if hit is None:
-            lines.insert(keys_at + 1, managed)
-        else:
-            lines[hit:hit + 1] = [SAVED + lines[hit].strip(), managed]
-    while lines and not lines[-1].strip():
-        lines.pop()
-    return "\n".join(lines + [""] + BLOCK) + "\n"
-
-
-def keys_uninstall_text(text: str) -> str:
-    lines = _strip_block(text.splitlines())
-    out = []
-    for ln in lines:
-        s = ln.strip()
-        if s.startswith(SAVED):
-            out.append(s[len(SAVED):]); continue
-        if s.startswith("# herdmark saved: "):
-            out.append(s[len("# herdmark saved: "):]); continue
-        if s.endswith(MARK) or s.endswith("# herdmark"):
-            continue
-        out.append(ln)
-    while out and not out[-1].strip():
-        out.pop()
-    return "\n".join(out) + "\n"
-
+# --- files -------------------------------------------------------------------
 
 def write_atomic(path: Path, text: str) -> None:
     target = path.resolve()
@@ -1575,24 +1370,6 @@ def write_atomic(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
-
-
-def cmd_keys(action: str, path: Path = HERDR_CONFIG) -> None:
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
-    new = keys_install_text(text) if action == "install" else keys_uninstall_text(text)
-    if new == text:
-        print(f"{path}: already {action}ed")
-        return
-    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = path.with_name(f"{path.name}.bak-{stamp}")
-    n = 2
-    while backup.exists():
-        backup = path.with_name(f"{path.name}.bak-{stamp}.{n}"); n += 1
-    if path.exists():
-        shutil.copy2(path, backup)
-    write_atomic(path, new)
-    print(f"{action}ed prefix+c binding in {path} (backup: {backup.name})")
-    print("run: herdr server reload-config")
 
 
 # --- tui -------------------------------------------------------------------------
@@ -2073,7 +1850,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 selected = keys.index(sel_key) if sel_key in keys else min(sel_at, max(0, len(keys) - 1))
                 hints = [hh for hh in PICKER_HINTS if hh[2] != "g" or can_widen]
                 res = menu([""] + text.split("\n"), [c["row"] + 1 for c in choices], hints,
-                           selected=selected, hotkeys="nwag", flash=flash,
+                           selected=selected, hotkeys="nwg", flash=flash,
                            line_keys={1: "g"} if can_widen else None,
                            numbered=[i for i, c in enumerate(choices) if c.get("idx")], scr=scr, tick=REFRESH_S)
                 if res[0] in ("pick", "tick") and choices:
@@ -2106,10 +1883,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 root = top or root
                 sel_key = ""
                 continue
-            if raw not in ("w", "n", "a") and not hit:
-                continue
-            if raw == "a" and not live.herdr:
-                flash = "adopt needs herdr"
+            if raw not in ("w", "n") and not hit:
                 continue
             if hit and hit["action"] == "focus":
                 try:
@@ -2128,9 +1902,6 @@ def picker(ctx: Ctx, cat: dict) -> int:
             try:
                 if raw in ("w", "n"):
                     done = wizard(ctx, cat, root)
-                elif raw == "a":
-                    cmd_adopt(ctx, cat)
-                    done = True
                 elif hit["action"] == "enter":
                     cmd_enter(ctx, cat, hit["target"]["name"], root)
                     done = True
@@ -2147,16 +1918,6 @@ def picker(ctx: Ctx, cat: dict) -> int:
     finally:
         if scr:
             scr.close()
-
-
-def cmd_open(env=None) -> int:
-    """Action entry: open the popup, forwarding the caller's context (the popup's own is not the caller's)."""
-    try:
-        open_plugin_pane(picker_open_args(invocation_ctx(env)))
-    except HerdrError as e:
-        print(f"cowbell: {e}", file=sys.stderr)
-        return 1
-    return 0
 
 
 # --- main ------------------------------------------------------------------------
@@ -2180,9 +1941,6 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
     return opts, rest
 
 
-NEEDS_HERDR = {"adopt", "stop"}
-
-
 def choose_host(herdr_up: bool, env=None) -> Ctx:
     """Once per run. Inside a herdr pane (or its popup): herdr tabs and herdr's agents. Anywhere else, or
     with COWBELL_MODE=here: this terminal, plus herdr's agents only when a server is actually listening."""
@@ -2200,14 +1958,7 @@ def main(argv: list[str]) -> int:
     if not argv:
         argv = ["picker"] if tui_ok() else ["status"]
     cmd, *rest = argv
-    if cmd == "keys":
-        cmd_keys(rest[0] if rest else "install"); return 0
-    if cmd == "open":
-        return cmd_open()
-    herdr_up = server_up()
-    if cmd in NEEDS_HERDR and not herdr_up:
-        print(f"cowbell: {cmd} needs a running Herdr server", file=sys.stderr); return 2
-    ctx = choose_host(herdr_up)
+    ctx = choose_host(server_up())
     cat = load_catalog()
     opts, pos = parse_flags(rest)
     if cmd == "picker":
@@ -2218,18 +1969,10 @@ def main(argv: list[str]) -> int:
         cmd_list(ctx, bool(opts.get("all"))); return 0
     if cmd == "catalog":
         cmd_catalog(cat); return 0
-    if cmd == "import-seats":
-        print(f"imported {import_seats()} seats from herdr-seats"); return 0
-    if cmd == "adopt":
-        cmd_adopt(ctx, cat, pos[0] if pos else None); return 0
     if cmd == "enter":
         if not pos:
             raise SystemExit("enter <name>")
         cmd_enter(ctx, cat, pos[0]); return 0
-    if cmd == "stop":
-        if not pos:
-            raise SystemExit("stop <name>")
-        cmd_stop(ctx, pos[0]); return 0
     if cmd == "new":
         hid = opts.get("harness") or (pos[0] if pos else "")
         if not hid:
