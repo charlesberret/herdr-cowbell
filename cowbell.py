@@ -204,55 +204,19 @@ def catalog_path() -> Path:
     return p
 
 
-# --- herdr client ------------------------------------------------------------
-
-def herdr_bin() -> str:
-    return os.environ.get("HERDR_BIN_PATH") or shutil.which("herdr") or os.path.expanduser("~/.local/bin/herdr")
-
-
-def herdr(*args: str, expect_json: bool = True) -> dict:
-    try:
-        proc = subprocess.run([herdr_bin(), *args], capture_output=True, text=True, check=False)
-    except OSError as e:  # herdr not installed: standalone cowbell still works
-        raise HerdrError(f"herdr unavailable: {e}") from e
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()
-        raise HerdrError(err or f"herdr {' '.join(args)} exited {proc.returncode}")
-    out = (proc.stdout or "").strip()
-    if not out:
-        return {}
-    try:
-        payload = json.loads(out)
-    except json.JSONDecodeError:
-        if expect_json:
-            raise HerdrError(f"herdr {' '.join(args)}: non-JSON output: {out[:120]}")
-        return {"raw": out}
-    if isinstance(payload, dict) and "error" in payload:
-        e = payload["error"]
-        raise HerdrError(e.get("message", str(e)) if isinstance(e, dict) else str(e))
-    if isinstance(payload, dict) and "result" in payload:
-        r = payload["result"]
-        return r if isinstance(r, dict) else {"value": r}
-    return payload if isinstance(payload, dict) else {"value": payload}
-
-
-def server_up() -> bool:
-    try:
-        herdr("workspace", "list")
-        return True
-    except (HerdrError, OSError):
-        return False
-
-
 # --- context -------------------------------------------------------------------
 
 class Ctx:
     """Where cowbell was invoked from: the caller's pane, tab, workspace, cwd."""
 
-    def __init__(self, workspace_id=None, tab_id=None, pane_id=None, cwd=None, agent=None, mode="tab"):
+    def __init__(self, workspace_id=None, tab_id=None, pane_id=None, cwd=None, agent=None, mode="tab",
+                 live: "LiveSource | None" = None, launch: "HostLaunch | None" = None):
         self.workspace_id, self.tab_id, self.pane_id = workspace_id, tab_id, pane_id
         self.cwd: str = os.path.realpath(cwd or os.getcwd())
         self.agent, self.mode = agent, mode
+        # The two host seams. main() chooses them once; the defaults follow the mode.
+        self.live = live if live is not None else (ProcessScan() if mode == "here" else HerdrLive())
+        self.launch = launch if launch is not None else (HereLaunch() if mode == "here" else HerdrLaunch())
 
     @classmethod
     def from_env(cls, env=None) -> "Ctx":
@@ -269,10 +233,7 @@ class Ctx:
         # A plugin action runs in the plugin root, so ask herdr where the caller's pane is. A command typed
         # in a pane runs where it was typed: the process cwd is the truth, even when the pane's shell moved.
         if not cwd and pane_id and env.get("HERDR_PLUGIN_ROOT"):
-            try:
-                cwd = (herdr("pane", "get", pane_id).get("pane") or {}).get("cwd")
-            except (HerdrError, OSError):
-                cwd = None
+            cwd = herdr_pane_cwd(pane_id)
         return cls(
             workspace_id=data.get("workspace_id") or env.get("HERDR_WORKSPACE_ID"),
             tab_id=data.get("tab_id") or env.get("HERDR_TAB_ID"),
@@ -303,10 +264,7 @@ def invocation_ctx(env=None) -> dict:
     if not out.get("focused_pane_cwd"):
         cwd = out.get("workspace_cwd")
         if not cwd and pane_id:
-            try:
-                cwd = (herdr("pane", "get", pane_id).get("pane") or {}).get("cwd")
-            except (HerdrError, OSError):
-                cwd = None
+            cwd = herdr_pane_cwd(pane_id)
         if cwd:
             out["focused_pane_cwd"] = cwd
     return out
@@ -520,40 +478,9 @@ def now() -> str:
     return _dt.datetime.now().replace(microsecond=0).isoformat()
 
 
-# --- live ----------------------------------------------------------------------
+# --- live (pure: reads a herdr snapshot already fetched) -------------------------
 
-def live_agents() -> list[dict]:
-    try:
-        return herdr("agent", "list").get("agents") or []
-    except HerdrError:
-        return []
-
-
-def live_panes() -> list[dict]:
-    try:
-        return herdr("pane", "list").get("panes") or []
-    except HerdrError:
-        return []
-
-
-def workspaces() -> list[dict]:
-    try:
-        return herdr("workspace", "list").get("workspaces") or []
-    except HerdrError:
-        return []
-
-
-def snapshot() -> dict:
-    try:
-        res = herdr("api", "snapshot")
-    except (HerdrError, OSError):
-        return {}
-    snap = res.get("snapshot")
-    return snap if isinstance(snap, dict) else {}
-
-
-def tab_labels(snap: dict | None = None) -> dict[str, str]:
-    snap = snapshot() if snap is None else snap
+def tab_labels(snap: dict) -> dict[str, str]:
     return {t["tab_id"]: (t.get("label") or "") for t in snap.get("tabs") or [] if t.get("tab_id")}
 
 
@@ -763,7 +690,8 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
         name, kind = f"{r['name']:<22}", f"{r.get('kind') or r['harness'] or '':<11}"
         where = ws_labels.get(r.get("workspace_id") or "", "") if r.get("workspace_id") != here_ws else ""
         where = f"in {where}" if where else f"on {r['tty']}" if r.get("tty") else ""
-        clock = f"{r.get('since', ''):<6}" if any(x.get("since") for x in reg["live"]) else ""
+        clock_w = max((len(x.get("since") or "") for x in reg["live"]), default=0)
+        clock = f"{r.get('since', ''):<{clock_w + 2}}" if clock_w else ""
         extra = f"{clock}{where}".rstrip()
         live.append({"action": "focus", "target": r, "key": f"focus:{r['pane_id']}",
                      "line": f"{paint(name, INK, bold=True)} {paint(kind, MUTED)} {status_cell(r['status'])}"
@@ -878,6 +806,334 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
 def shell_join(parts: list[str]) -> str:
     import shlex
     return " ".join(shlex.quote(p) for p in parts)
+
+
+def live_names(snap: dict) -> set[str]:
+    """Taken sittings: tab labels of live agent panes (the sidebar identity token)."""
+    labels = tab_labels(snap)
+    names: set[str] = set()
+    for a in snap.get("agents") or []:
+        lab = slug(labels.get(a.get("tab_id"), "") or "")
+        if lab:
+            names.add(lab)
+    return names
+
+
+# --- standalone (outside herdr) -----------------------------------------------------
+# Same picker in any terminal. Running here = herdr's agents (if a server is up) plus agent
+# processes found by cwd; starting or resuming hands this terminal to the agent (exec).
+
+AGENT_EXES = {"claude", "codex", "grok", "gemini", "agy", "opencode", "pi", "cursor-agent", "kimi", "amp",
+              "copilot", "qwen", "droid", "omp", "kilo", "cline", "devin", "hermes", "kiro", "muse", "maki",
+              "mastracode", "qodercli"}
+INTERPRETERS = {"node", "bun", "deno", "python", "python3"}
+
+
+def in_herdr_pane(env=None) -> bool:
+    env = os.environ if env is None else env
+    return bool(env.get("HERDR_PANE_ID") or env.get("HERDR_PLUGIN_CONTEXT_JSON") or env.get("COWBELL_CTX"))
+
+
+def ps_table(text: str | None = None) -> dict[int, dict]:
+    """pid -> {ppid, tty, argv}. `text` is `ps -axo pid=,ppid=,tty=,args=` output (for tests)."""
+    if text is None:
+        text = subprocess.run(["ps", "-axo", "pid=,ppid=,tty=,args="], capture_output=True, text=True).stdout
+    out = {}
+    for line in text.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4 or not parts[0].isdigit():
+            continue
+        out[int(parts[0])] = {"ppid": int(parts[1]), "tty": parts[2], "argv": parts[3].split()}
+    return out
+
+
+def exe_kind(argv: list[str]) -> str:
+    """Which agent CLI a command line is, or "". App bundles are desktop apps, not terminal agents."""
+    if not argv or ".app/" in argv[0]:
+        return ""
+    head = os.path.basename(argv[0])
+    if head in INTERPRETERS or re.match(r"python3\.\d+$", head):
+        script = next((a for a in argv[1:] if not a.startswith("-")), "")
+        head = os.path.basename(script)
+    return head if head in AGENT_EXES else ""
+
+
+def process_cwds(pids: list[int]) -> dict[int, str]:
+    if not pids:
+        return {}
+    if Path("/proc").is_dir():
+        out = {}
+        for pid in pids:
+            try:
+                out[pid] = os.readlink(f"/proc/{pid}/cwd")
+            except OSError:
+                pass
+        return out
+    proc = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, pids))],
+                          capture_output=True, text=True)
+    out, pid = {}, None
+    for line in proc.stdout.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            pid = int(line[1:])
+        elif line.startswith("n") and pid is not None:
+            out[pid] = line[1:]
+    return out
+
+
+def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds) -> list[dict]:
+    """Agent CLIs on a terminal, not under herdr (herdr lists its own) and not nested in another agent."""
+    table = ps_table() if table is None else table
+    kinds = {pid: exe_kind(p["argv"]) for pid, p in table.items()}
+
+    def outside(pid: int) -> bool:
+        seen, cur = set(), table[pid]["ppid"]
+        while cur in table and cur not in seen:
+            seen.add(cur)
+            if kinds.get(cur) or os.path.basename(table[cur]["argv"][0]) == "herdr":
+                return False
+            cur = table[cur]["ppid"]
+        return True
+
+    found = [pid for pid, k in kinds.items()
+             if k and table[pid]["tty"] not in ("??", "?", "-") and outside(pid)]
+    where = cwds(found)
+    return [{"pane_id": f"pid:{pid}", "pid": pid, "tty": table[pid]["tty"], "agent": kinds[pid],
+             "cwd": where[pid], "agent_status": "running", "tab_id": None, "workspace_id": None,
+             "terminal_title_stripped": kinds[pid], "agent_session": {}}
+            for pid in found if pid in where]
+
+
+def here_command(cat: dict, h: dict, name: str, model="", lane="", allow="", deny="", seat: Path | None = None,
+                 resume_id: str = "", extra: list[str] | None = None) -> tuple[list[str], str]:
+    """Full command line for this terminal, and the session id cowbell can record for a later resume."""
+    import uuid
+    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
+    session = resume_id
+    if not resume_id and h.get("session_id_flag") and not is_wrapper(h):
+        session = str(uuid.uuid4())
+        argv = [h["session_id_flag"], session] + argv
+    if name and h.get("name_flag") and not is_wrapper(h):
+        argv += [h["name_flag"], name]
+    return ([h["command"]] if is_wrapper(h) else [h["kind"]]) + argv, session
+
+
+def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
+              seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True):
+    """Hand this terminal to the agent. Does not return."""
+    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
+    exe = cmd[0] if is_wrapper(h) else shutil.which(cmd[0])
+    if not exe:
+        raise SystemExit(f"cowbell: {cmd[0]} is not on PATH")
+    rows = [r for r in load_roster() if r.get("name") != name]
+    rows.append({"name": name, "cwd": root, "harness": h["id"], "kind": h["kind"], "model": model, "lane": lane,
+                 "allow": allow, "deny": deny, "seat": str(seat) if seat else "", "session_id": session,
+                 "pane_id": None, "created": now(), "last_seen": now()[:10], "argv": cmd[1:], "source": "here"})
+    save_roster(rows)
+    sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
+    print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
+    sys.stdout.flush()
+    os.chdir(root)
+    os.execv(exe, cmd)
+
+
+def launch(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", *args, **kw):
+    """Start or resume through the host chosen once: a new herdr tab, or this terminal."""
+    return ctx.launch.start(cat, h, name, root, ctx, *args, **kw)
+
+
+# --- hosts ---------------------------------------------------------------------
+# Two seams, chosen once in main(): where running agents come from (LiveSource) and where a
+# started or resumed agent goes (HostLaunch). Nothing outside the herdr adapter runs `herdr`.
+
+class LiveSource:
+    """Running agents as herdr-shaped rows (pane_id, agent, cwd, agent_status, ...). The empty source."""
+    herdr = False  # True when rows are herdr panes that can be focused, adopted, stopped
+
+    def agents(self) -> list[dict]:
+        return []
+
+    def panes(self) -> list[dict]:
+        return []
+
+    def snapshot(self) -> dict:
+        return {}
+
+    def agent(self, name: str) -> dict | None:
+        return None
+
+    def refresh_sessions(self, rows: list[dict]) -> None:
+        return None
+
+    def focus(self, row: dict) -> str:
+        """Bring a running agent forward and say so, or raise SystemExit saying why not."""
+        raise SystemExit(f"cowbell: {row.get('name') or row.get('pane_id')} cannot be focused from here")
+
+
+class ProcessScan(LiveSource):
+    """Agent CLIs found by process working directory (outside herdr)."""
+
+    def agents(self) -> list[dict]:
+        return agent_processes()
+
+    def focus(self, row: dict) -> str:
+        raise SystemExit(f"{row.get('name')} runs on {row.get('tty')} (pid {row.get('pid')}); "
+                         f"cowbell can't switch to another terminal")
+
+
+class CombinedLive(LiveSource):
+    def __init__(self, *sources: LiveSource | None):
+        self.sources = [x for x in sources if x is not None]
+        self.herdr = any(x.herdr for x in self.sources)
+
+    def agents(self) -> list[dict]:
+        return [a for x in self.sources for a in x.agents()]
+
+    def panes(self) -> list[dict]:
+        return [p for x in self.sources for p in x.panes()]
+
+    def snapshot(self) -> dict:
+        return next((snap for snap in (x.snapshot() for x in self.sources) if snap), {})
+
+    def agent(self, name: str) -> dict | None:
+        return next((a for a in (x.agent(name) for x in self.sources) if a), None)
+
+    def refresh_sessions(self, rows: list[dict]) -> None:
+        for x in self.sources:
+            x.refresh_sessions(rows)
+
+    def focus(self, row: dict) -> str:
+        owner = ProcessScan if str(row.get("pane_id") or "").startswith("pid:") else HerdrLive
+        src = next((x for x in self.sources if isinstance(x, owner)), None)
+        return (src or LiveSource()).focus(row)
+
+
+class HostLaunch:
+    tabs = False  # True when a start opens a herdr tab
+
+    def start(self, cat: dict, h: dict, name: str, root: str, ctx: "Ctx", *args, **kw) -> dict:
+        raise NotImplementedError
+
+
+class HereLaunch(HostLaunch):
+    """Hand this terminal to the agent (exec). Never creates a tab."""
+
+    def start(self, cat, h, name, root, ctx, *args, **kw):
+        return exec_here(cat, h, name, root, ctx, *args, **kw)
+
+
+# --- herdr adapter (the only code that runs the herdr CLI) ------------------------------------
+
+def herdr_bin() -> str:
+    return os.environ.get("HERDR_BIN_PATH") or shutil.which("herdr") or os.path.expanduser("~/.local/bin/herdr")
+
+
+def herdr(*args: str, expect_json: bool = True) -> dict:
+    try:
+        proc = subprocess.run([herdr_bin(), *args], capture_output=True, text=True, check=False)
+    except OSError as e:  # herdr not installed: standalone cowbell still works
+        raise HerdrError(f"herdr unavailable: {e}") from e
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise HerdrError(err or f"herdr {' '.join(args)} exited {proc.returncode}")
+    out = (proc.stdout or "").strip()
+    if not out:
+        return {}
+    try:
+        payload = json.loads(out)
+    except json.JSONDecodeError:
+        if expect_json:
+            raise HerdrError(f"herdr {' '.join(args)}: non-JSON output: {out[:120]}")
+        return {"raw": out}
+    if isinstance(payload, dict) and "error" in payload:
+        e = payload["error"]
+        raise HerdrError(e.get("message", str(e)) if isinstance(e, dict) else str(e))
+    if isinstance(payload, dict) and "result" in payload:
+        r = payload["result"]
+        return r if isinstance(r, dict) else {"value": r}
+    return payload if isinstance(payload, dict) else {"value": payload}
+
+
+def herdr_socket() -> Path:
+    if os.environ.get("HERDR_SOCKET_PATH"):
+        return Path(os.environ["HERDR_SOCKET_PATH"]).expanduser()
+    cfg = os.environ.get("HERDR_CONFIG_PATH")
+    return (Path(cfg).expanduser().parent if cfg else Path("~/.config/herdr").expanduser()) / "herdr.sock"
+
+
+def server_up() -> bool:
+    """A herdr server is listening. Probes the socket, so it never runs the herdr CLI."""
+    import socket
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(0.3)
+    try:
+        sock.connect(str(herdr_socket()))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def herdr_pane_cwd(pane_id: str) -> str | None:
+    try:
+        return (herdr("pane", "get", pane_id).get("pane") or {}).get("cwd")
+    except (HerdrError, OSError):
+        return None
+
+
+def live_agents() -> list[dict]:
+    try:
+        return herdr("agent", "list").get("agents") or []
+    except HerdrError:
+        return []
+
+
+def live_panes() -> list[dict]:
+    try:
+        return herdr("pane", "list").get("panes") or []
+    except HerdrError:
+        return []
+
+
+def workspaces() -> list[dict]:
+    try:
+        return herdr("workspace", "list").get("workspaces") or []
+    except HerdrError:
+        return []
+
+
+def snapshot() -> dict:
+    try:
+        res = herdr("api", "snapshot")
+    except (HerdrError, OSError):
+        return {}
+    snap = res.get("snapshot")
+    return snap if isinstance(snap, dict) else {}
+
+
+def name_is_live(name: str) -> dict | None:
+    try:
+        info = herdr("agent", "get", name)
+    except HerdrError:
+        return None
+    return info.get("agent") or info
+
+
+def refresh_sessions(rows: list[dict]) -> None:
+    """Fill session ids the agent only reported after launch; match by pane."""
+    by_pane = {a["pane_id"]: a for a in live_agents() if a.get("pane_id")}
+    today = now()[:10]
+    changed = False
+    for r in rows:
+        a = by_pane.get(r.get("pane_id") or "")
+        if a:
+            sid = (a.get("agent_session") or {}).get("value")
+            if sid and sid != r.get("session_id"):
+                r["session_id"] = sid; changed = True
+            if r.get("last_seen") != today:
+                r["last_seen"] = today; changed = True
+    if changed:
+        save_roster(rows)
 
 
 def pick_workspace(ctx: Ctx, root: str) -> str | None:
@@ -1005,165 +1261,51 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     return pane
 
 
-def live_names(snap: dict | None = None) -> set[str]:
-    """Taken sittings: tab labels of live agent panes (the sidebar identity token)."""
-    snap = snapshot() if snap is None else snap
-    labels = tab_labels(snap)
-    names: set[str] = set()
-    for a in snap.get("agents") or []:
-        lab = slug(labels.get(a.get("tab_id"), "") or "")
-        if lab:
-            names.add(lab)
-    return names
+def focus_agent(pane_id: str) -> None:
+    herdr("agent", "focus", pane_id)
 
 
-def name_is_live(name: str) -> dict | None:
-    try:
-        info = herdr("agent", "get", name)
-    except HerdrError:
-        return None
+def agent_info(target: str) -> dict:
+    info = herdr("agent", "get", target)
     return info.get("agent") or info
 
 
-def refresh_sessions(rows: list[dict]) -> None:
-    """Fill session ids the agent only reported after launch; match by pane."""
-    by_pane = {a["pane_id"]: a for a in live_agents() if a.get("pane_id")}
-    today = now()[:10]
-    changed = False
-    for r in rows:
-        a = by_pane.get(r.get("pane_id") or "")
-        if a:
-            sid = (a.get("agent_session") or {}).get("value")
-            if sid and sid != r.get("session_id"):
-                r["session_id"] = sid; changed = True
-            if r.get("last_seen") != today:
-                r["last_seen"] = today; changed = True
-    if changed:
-        save_roster(rows)
+def send_ctrl_c(pane_id: str) -> None:
+    herdr("agent", "send-keys", pane_id, "ctrl+c")
 
 
-# --- standalone (outside herdr) -----------------------------------------------------
-# Same picker in any terminal. Running here = herdr's agents (if a server is up) plus agent
-# processes found by cwd; starting or resuming hands this terminal to the agent (exec).
-
-AGENT_EXES = {"claude", "codex", "grok", "gemini", "agy", "opencode", "pi", "cursor-agent", "kimi", "amp",
-              "copilot", "qwen", "droid", "omp", "kilo", "cline", "devin", "hermes", "kiro", "muse", "maki",
-              "mastracode", "qodercli"}
-INTERPRETERS = {"node", "bun", "deno", "python", "python3"}
+def open_plugin_pane(args: list[str]) -> dict:
+    return herdr(*args)
 
 
-def in_herdr_pane(env=None) -> bool:
-    env = os.environ if env is None else env
-    return bool(env.get("HERDR_PANE_ID") or env.get("HERDR_PLUGIN_CONTEXT_JSON") or env.get("COWBELL_CTX"))
+class HerdrLive(LiveSource):
+    herdr = True
+
+    def agents(self) -> list[dict]:
+        return live_agents()
+
+    def panes(self) -> list[dict]:
+        return live_panes()
+
+    def snapshot(self) -> dict:
+        return snapshot()
+
+    def agent(self, name: str) -> dict | None:
+        return name_is_live(name)
+
+    def refresh_sessions(self, rows: list[dict]) -> None:
+        refresh_sessions(rows)
+
+    def focus(self, row: dict) -> str:
+        focus_agent(row["pane_id"])
+        return f"focused {row.get('name') or row['pane_id']} in {row['pane_id']}"
 
 
-def ps_table(text: str | None = None) -> dict[int, dict]:
-    """pid -> {ppid, tty, argv}. `text` is `ps -axo pid=,ppid=,tty=,args=` output (for tests)."""
-    if text is None:
-        text = subprocess.run(["ps", "-axo", "pid=,ppid=,tty=,args="], capture_output=True, text=True).stdout
-    out = {}
-    for line in text.splitlines():
-        parts = line.split(None, 3)
-        if len(parts) < 4 or not parts[0].isdigit():
-            continue
-        out[int(parts[0])] = {"ppid": int(parts[1]), "tty": parts[2], "argv": parts[3].split()}
-    return out
+class HerdrLaunch(HostLaunch):
+    tabs = True
 
-
-def exe_kind(argv: list[str]) -> str:
-    """Which agent CLI a command line is, or "". App bundles are desktop apps, not terminal agents."""
-    if not argv or ".app/" in argv[0]:
-        return ""
-    head = os.path.basename(argv[0])
-    if head in INTERPRETERS or re.match(r"python3\.\d+$", head):
-        script = next((a for a in argv[1:] if not a.startswith("-")), "")
-        head = os.path.basename(script)
-    return head if head in AGENT_EXES else ""
-
-
-def process_cwds(pids: list[int]) -> dict[int, str]:
-    if not pids:
-        return {}
-    if Path("/proc").is_dir():
-        out = {}
-        for pid in pids:
-            try:
-                out[pid] = os.readlink(f"/proc/{pid}/cwd")
-            except OSError:
-                pass
-        return out
-    proc = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, pids))],
-                          capture_output=True, text=True)
-    out, pid = {}, None
-    for line in proc.stdout.splitlines():
-        if line.startswith("p") and line[1:].isdigit():
-            pid = int(line[1:])
-        elif line.startswith("n") and pid is not None:
-            out[pid] = line[1:]
-    return out
-
-
-def agent_processes(table: dict[int, dict] | None = None, cwds=process_cwds) -> list[dict]:
-    """Agent CLIs on a terminal, not under herdr (herdr lists its own) and not nested in another agent."""
-    table = ps_table() if table is None else table
-    kinds = {pid: exe_kind(p["argv"]) for pid, p in table.items()}
-
-    def outside(pid: int) -> bool:
-        seen, cur = set(), table[pid]["ppid"]
-        while cur in table and cur not in seen:
-            seen.add(cur)
-            if kinds.get(cur) or os.path.basename(table[cur]["argv"][0]) == "herdr":
-                return False
-            cur = table[cur]["ppid"]
-        return True
-
-    found = [pid for pid, k in kinds.items()
-             if k and table[pid]["tty"] not in ("??", "?", "-") and outside(pid)]
-    where = cwds(found)
-    return [{"pane_id": f"pid:{pid}", "pid": pid, "tty": table[pid]["tty"], "agent": kinds[pid],
-             "cwd": where[pid], "agent_status": "running", "tab_id": None, "workspace_id": None,
-             "terminal_title_stripped": kinds[pid], "agent_session": {}}
-            for pid in found if pid in where]
-
-
-def here_command(cat: dict, h: dict, name: str, model="", lane="", allow="", deny="", seat: Path | None = None,
-                 resume_id: str = "", extra: list[str] | None = None) -> tuple[list[str], str]:
-    """Full command line for this terminal, and the session id cowbell can record for a later resume."""
-    import uuid
-    argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
-    session = resume_id
-    if not resume_id and h.get("session_id_flag") and not is_wrapper(h):
-        session = str(uuid.uuid4())
-        argv = [h["session_id_flag"], session] + argv
-    if name and h.get("name_flag") and not is_wrapper(h):
-        argv += [h["name_flag"], name]
-    return ([h["command"]] if is_wrapper(h) else [h["kind"]]) + argv, session
-
-
-def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
-              seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True):
-    """Hand this terminal to the agent. Does not return."""
-    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
-    exe = cmd[0] if is_wrapper(h) else shutil.which(cmd[0])
-    if not exe:
-        raise SystemExit(f"cowbell: {cmd[0]} is not on PATH")
-    rows = [r for r in load_roster() if r.get("name") != name]
-    rows.append({"name": name, "cwd": root, "harness": h["id"], "kind": h["kind"], "model": model, "lane": lane,
-                 "allow": allow, "deny": deny, "seat": str(seat) if seat else "", "session_id": session,
-                 "pane_id": None, "created": now(), "last_seen": now()[:10], "argv": cmd[1:], "source": "here"})
-    save_roster(rows)
-    sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
-    print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
-    sys.stdout.flush()
-    os.chdir(root)
-    os.execv(exe, cmd)
-
-
-def launch(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", *args, **kw):
-    """Start or resume: a new herdr tab from inside herdr, this terminal from outside."""
-    if ctx.mode == "here":
-        return exec_here(cat, h, name, root, ctx, *args, **kw)
-    return raise_harness(cat, h, name, root, ctx, *args, **kw)
+    def start(self, cat, h, name, root, ctx, *args, **kw):
+        return raise_harness(cat, h, name, root, ctx, *args, **kw)
 
 
 # --- commands ------------------------------------------------------------------
@@ -1172,11 +1314,10 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None) -> dict:
     root, place, _ = resolve_root(cat, root or ctx.cwd)
     cat = scoped_catalog(cat, place)
     rows = load_roster()
-    refresh_sessions(rows)
-    agents = live_agents() + (agent_processes() if ctx.mode == "here" else [])
-    panes = live_panes()
+    ctx.live.refresh_sessions(rows)
+    agents, panes = ctx.live.agents(), ctx.live.panes()
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
-                         tab_label=tab_labels())
+                         tab_label=tab_labels(ctx.live.snapshot()))
     top = git_root(root)
     wider = None
     if top and os.path.realpath(top) != os.path.realpath(root):
@@ -1191,15 +1332,13 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
     if len(hits) != 1:
         raise SystemExit(f"cowbell: {'no' if not hits else 'ambiguous'} roster entry {name!r}")
     r = hits[0]
-    live = name_is_live(r["name"])
+    live = ctx.live.agent(r["name"])
     if live and live.get("pane_id"):
-        herdr("agent", "focus", live["pane_id"])
-        print(f"focused {r['name']} in {live['pane_id']}")
+        print(ctx.live.focus({**live, "name": r["name"]}))
         return
-    for a in live_agents():
-        if a.get("pane_id") == r.get("pane_id"):
-            herdr("agent", "focus", a["pane_id"])
-            print(f"focused {r['name']} in {a['pane_id']}")
+    for a in ctx.live.agents():
+        if r.get("pane_id") and a.get("pane_id") == r.get("pane_id"):
+            print(ctx.live.focus({**a, "name": r["name"]}))
             return
     h = harness_by_id(cat, r.get("harness") or r.get("kind") or "")
     if not h:
@@ -1213,16 +1352,15 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
 def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None) -> None:
     pane_id = ctx.pane_id
     if not pane_id:
-        focused = [a for a in live_agents() if a.get("focused")]
+        focused = [a for a in ctx.live.agents() if a.get("focused")]
         pane_id = focused[0]["pane_id"] if focused else None
     if not pane_id:
         raise SystemExit("cowbell: no focused pane to adopt")
-    info = herdr("agent", "get", pane_id)
-    a = info.get("agent") or info
+    a = agent_info(pane_id)
     kind = a.get("agent") or ""
     if not kind:
         raise SystemExit(f"cowbell: pane {pane_id} hosts no recognized agent")
-    sitting = tab_labels().get(a.get("tab_id"), "")
+    sitting = tab_labels(ctx.live.snapshot()).get(a.get("tab_id"), "")
     title = a.get("terminal_title_stripped") or ""
     noisy = (not title or title.startswith("-") or " - grok " in title.lower()
              or "waiting" in title.lower() or "running:" in title.lower())
@@ -1241,23 +1379,23 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None) -> None:
     print(f"adopted {nm}  {kind}  {tilde(a.get('cwd') or ctx.cwd)}")
 
 
-def cmd_stop(name: str) -> None:
+def cmd_stop(ctx: Ctx, name: str) -> None:
     rows = load_roster()
     hits = [r for r in rows if r["name"] == name]
     if not hits:
         raise SystemExit(f"cowbell: no roster entry {name!r}")
-    live = name_is_live(name) or {}
+    live = ctx.live.agent(name) or {}
     pid = live.get("pane_id") or hits[0].get("pane_id")
     if not pid:
         raise SystemExit(f"cowbell: {name} is not live")
-    herdr("agent", "send-keys", pid, "ctrl+c")
+    send_ctrl_c(pid)
     print(f"ctrl+c → {name} ({pid})")
 
 
 def cmd_list(ctx: Ctx, all_rows: bool) -> None:
     rows = load_roster()
-    refresh_sessions(rows)
-    by_pane = {a["pane_id"]: a for a in live_agents() if a.get("pane_id")}
+    ctx.live.refresh_sessions(rows)
+    by_pane = {a["pane_id"]: a for a in ctx.live.agents() if a.get("pane_id")}
     rows = rows if all_rows else roster_here(rows, ctx.cwd)
     if not rows:
         print("no roster entries" + ("" if all_rows else f" under {tilde(ctx.cwd)}  (try --all)"))
@@ -1310,7 +1448,7 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     seat = None if (no_seat or not h.get("seat_flag")) else seat_file(root)
     gate(h, root, interactive=False, assume_yes=assume_yes)
     base = slug(name or h["id"])
-    nm = unique_name(base, live_names() | {r["name"] for r in load_roster()})
+    nm = unique_name(base, live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()})
     pane = launch(cat, h, nm, root, ctx, model, lane, allow, deny, seat, extra=extra, focus=focus)
     print(f"raised {nm}  {h['id']}{(' ' + model) if model else ''}{(' ' + lane) if lane else ''}  in {pane['pane_id']}  {tilde(root)}")
 
@@ -1318,11 +1456,11 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
 def cmd_dispatch(ctx: Ctx, cat: dict, hid: str, assume_yes: bool) -> None:
     """`cowbell claude`: attach to that harness here if one exists, else raise it with defaults."""
     root, place, _ = resolve_root(cat, ctx.cwd)
-    reg = build_registry(scoped_catalog(cat, place), root, live_agents(), live_panes(), load_roster(), matcher=lambda _tool: {"verdict": "unknown"})
+    reg = build_registry(scoped_catalog(cat, place), root, ctx.live.agents(), ctx.live.panes(), load_roster(),
+                         matcher=lambda _tool: {"verdict": "unknown"})
     for r in reg["live"]:
         if r["harness"] == hid or r["kind"] == hid:
-            herdr("agent", "focus", r["pane_id"])
-            print(f"focused {r['name']} ({hid}) in {r['pane_id']}")
+            print(ctx.live.focus(r))
             return
     for r in reg["cold"]:
         if (r.get("harness") or r.get("kind")) == hid:
@@ -1790,7 +1928,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
     v = verdicts[h["id"]]
     if v["verdict"] == "blocked":
         print(f"  ⊘ refused: {h['id']} on {tilde(root)} is blocked {v['flag']}"); return False
-    taken = live_names() | {r["name"] for r in load_roster()}
+    taken = live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()}
     base = unique_name(slug(h["id"]), taken)
     print(f"  {paint(h['id'], INK, bold=True)}  {intro}")
     name = unique_name(slug(ask(f"  name [{base}]: ", base)), taken)
@@ -1836,7 +1974,7 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
     v = trust_match(h["trust_tool"], root)
     if v["verdict"] == "blocked":
         print(f"  ⊘ refused: {hid} on {tilde(root)} is blocked {v['flag']}"); return False
-    taken = live_names() | {r["name"] for r in load_roster()}
+    taken = live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()}
     base = unique_name(slug(h["id"]), taken)
     lane = "" if is_wrapper(h) else cat["defaults"].get("lane", "yellow")
     if ctx.mode != "here":  # outside herdr, exec_here prints the command it hands the terminal to
@@ -1894,8 +2032,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
     root, _, remapped = resolve_root(full_cat, ctx.cwd)
     tui = tui_ok()
     scr = Screen() if tui else None
-    here = ctx.mode == "here"
-    herdr_up = not here or server_up()
+    live = ctx.live
     sel_key, sel_at, flash, expanded = "", 0, "", set()
     verdicts: dict[tuple[str, str], dict] = {}
     git_tops: dict[str, str | None] = {}
@@ -1912,11 +2049,9 @@ def picker(ctx: Ctx, cat: dict) -> int:
             place = place_for(full_cat, root)
             cat = scoped_catalog(full_cat, place)  # flows below (wizard, quick start) see only this place's harnesses
             rows = load_roster()
-            if herdr_up:
-                refresh_sessions(rows)
-            snap = snapshot() if herdr_up else {}
-            agents = (live_agents() if herdr_up else []) + (agent_processes() if here else [])
-            panes = live_panes() if herdr_up else []
+            live.refresh_sessions(rows)
+            snap = live.snapshot()
+            agents, panes = live.agents(), live.panes()
             if root not in git_tops:
                 git_tops[root] = git_root(root)
             top = git_tops[root]
@@ -1973,13 +2108,20 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 continue
             if raw not in ("w", "n", "a") and not hit:
                 continue
-            if raw == "a" and not herdr_up:
+            if raw == "a" and not live.herdr:
                 flash = "adopt needs herdr"
                 continue
-            if hit and hit["action"] == "focus" and str(hit["target"]["pane_id"]).startswith("pid:"):
-                t = hit["target"]
-                flash = f"{t['name']} runs on {t['tty']} (pid {t['pid']}); cowbell can't switch to another terminal"
-                continue
+            if hit and hit["action"] == "focus":
+                try:
+                    said = live.focus(hit["target"])
+                except SystemExit as e:  # e.g. a process in another terminal: say where, stay open
+                    flash = str(e)
+                    continue
+                if scr:
+                    scr.close()
+                if ctx.mode == "here":
+                    print(f"  {said}")
+                return 0
             if scr:
                 scr.close()
                 sys.stdout.write("\x1b[H\x1b[2J")  # prompts that follow start on a clean popup
@@ -1988,12 +2130,6 @@ def picker(ctx: Ctx, cat: dict) -> int:
                     done = wizard(ctx, cat, root)
                 elif raw == "a":
                     cmd_adopt(ctx, cat)
-                    done = True
-                elif hit["action"] == "focus":
-                    herdr("agent", "focus", hit["target"]["pane_id"])
-                    if here:
-                        where = ws_labels.get(hit["target"].get("workspace_id") or "", "")
-                        print(f"  focused {hit['target']['name']} in herdr{(' · ' + where) if where else ''}")
                     done = True
                 elif hit["action"] == "enter":
                     cmd_enter(ctx, cat, hit["target"]["name"], root)
@@ -2016,7 +2152,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
 def cmd_open(env=None) -> int:
     """Action entry: open the popup, forwarding the caller's context (the popup's own is not the caller's)."""
     try:
-        herdr(*picker_open_args(invocation_ctx(env)))
+        open_plugin_pane(picker_open_args(invocation_ctx(env)))
     except HerdrError as e:
         print(f"cowbell: {e}", file=sys.stderr)
         return 1
@@ -2047,6 +2183,15 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
 NEEDS_HERDR = {"adopt", "stop"}
 
 
+def choose_host(herdr_up: bool, env=None) -> Ctx:
+    """Once per run. Inside a herdr pane (or its popup): herdr tabs and herdr's agents. Anywhere else, or
+    with COWBELL_MODE=here: this terminal, plus herdr's agents only when a server is actually listening."""
+    env = os.environ if env is None else env
+    if env.get("COWBELL_MODE") != "here" and herdr_up and in_herdr_pane(env):
+        return Ctx.from_env(env)
+    return Ctx(cwd=os.getcwd(), mode="here", live=CombinedLive(HerdrLive() if herdr_up else None, ProcessScan()))
+
+
 def main(argv: list[str]) -> int:
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__); return 0
@@ -2062,8 +2207,7 @@ def main(argv: list[str]) -> int:
     herdr_up = server_up()
     if cmd in NEEDS_HERDR and not herdr_up:
         print(f"cowbell: {cmd} needs a running Herdr server", file=sys.stderr); return 2
-    # Inside a herdr pane (or its popup) new agents get a herdr tab; anywhere else, this terminal.
-    ctx = Ctx.from_env() if herdr_up and in_herdr_pane() else Ctx(cwd=os.getcwd(), mode="here")
+    ctx = choose_host(herdr_up)
     cat = load_catalog()
     opts, pos = parse_flags(rest)
     if cmd == "picker":
@@ -2085,7 +2229,7 @@ def main(argv: list[str]) -> int:
     if cmd == "stop":
         if not pos:
             raise SystemExit("stop <name>")
-        cmd_stop(pos[0]); return 0
+        cmd_stop(ctx, pos[0]); return 0
     if cmd == "new":
         hid = opts.get("harness") or (pos[0] if pos else "")
         if not hid:

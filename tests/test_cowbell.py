@@ -1,4 +1,5 @@
 import json
+import re
 import os
 import sys
 import tempfile
@@ -237,6 +238,13 @@ class PickerList(unittest.TestCase):
             self.assertIn(needle, text)
         for gone in ("LIVE", "RAISE", "subject", "omp", "local-ornith", "⊘", "?", "w1:p1", "cold", "no-session"):
             self.assertNotIn(gone, text)
+
+    def test_long_clock_does_not_run_into_the_workspace(self):
+        reg = self.reg()
+        reg["live"][1]["since"] = "26h55m"
+        line = next(c for c in hm.picker_choices(reg, [], here_ws="w1", ws_labels={"w2": "proj:fonts"})
+                    if c["target"].get("name") == "scholar")["line"]
+        self.assertIn("26h55m  in proj:fonts", hm.ANSI_RE.sub("", line))
 
     def test_widen_only_when_it_shows_more(self):
         reg = self.reg()
@@ -512,6 +520,121 @@ class Places(unittest.TestCase):
         tab = next(c for c in calls if c[:2] == ("tab", "create"))
         self.assertEqual(tab[tab.index("--workspace") + 1], "wL")
         self.assertFalse(any(c[:2] == ("workspace", "create") for c in calls))
+
+
+class Hosts(unittest.TestCase):
+    """LiveSource / HostLaunch seams (LAB-249)."""
+
+    SRC = Path(__file__).resolve().parent.parent / "cowbell.py"
+
+    def test_every_herdr_call_is_inside_the_adapter(self):
+        lines = self.SRC.read_text().splitlines()
+        start = next(i for i, ln in enumerate(lines) if ln.startswith("# --- herdr adapter"))
+        end = next(i for i, ln in enumerate(lines) if i > start and ln.startswith("# --- "))
+        outside = [f"{i + 1}: {ln.strip()}" for i, ln in enumerate(lines)
+                   if re.search(r"\bherdr\(", ln) and not start < i < end]
+        self.assertEqual(outside, [])
+
+    def test_server_up_probes_the_socket_not_the_cli(self):
+        orig, env = hm.herdr, os.environ.get("HERDR_SOCKET_PATH")
+        hm.herdr = lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran herdr"))
+        os.environ["HERDR_SOCKET_PATH"] = "/nonexistent/herdr.sock"
+        try:
+            self.assertFalse(hm.server_up())
+        finally:
+            hm.herdr = orig
+            if env is None:
+                os.environ.pop("HERDR_SOCKET_PATH")
+            else:
+                os.environ["HERDR_SOCKET_PATH"] = env
+
+    def test_host_is_chosen_once(self):
+        pane = {"HERDR_PANE_ID": "w1:p1", "HERDR_WORKSPACE_ID": "w1"}
+        inside = hm.choose_host(True, pane)
+        self.assertEqual(inside.mode, "tab")
+        self.assertIsInstance(inside.launch, hm.HerdrLaunch)
+        self.assertIsInstance(inside.live, hm.HerdrLive)
+        forced = hm.choose_host(True, {**pane, "COWBELL_MODE": "here"})
+        self.assertEqual(forced.mode, "here")
+        self.assertIsInstance(forced.launch, hm.HereLaunch)
+        self.assertTrue(forced.live.herdr)
+        offline = hm.choose_host(False, pane)
+        self.assertEqual(offline.mode, "here")
+        self.assertFalse(offline.live.herdr)
+        self.assertEqual([type(x) for x in offline.live.sources], [hm.ProcessScan])
+
+    def test_here_never_creates_a_tab(self):
+        calls = []
+        saved = (hm.herdr, hm.exec_here)
+        hm.herdr = lambda *a, **k: calls.append(a) or {}
+        hm.exec_here = lambda *a, **k: {"pane_id": None}
+        try:
+            hm.launch(CAT, CAT["harness"][0], "n", ROOT, hm.Ctx(cwd="/", mode="here"))
+        finally:
+            hm.herdr, hm.exec_here = saved
+        self.assertEqual(calls, [])
+
+    def test_combined_focus_routes_by_row(self):
+        focused = []
+        orig = hm.focus_agent
+        hm.focus_agent = focused.append
+        try:
+            live = hm.CombinedLive(hm.HerdrLive(), hm.ProcessScan())
+            self.assertIn("focused", live.focus({"name": "a", "pane_id": "w1:p2"}))
+            with self.assertRaises(SystemExit) as e:
+                live.focus({"name": "b", "pane_id": "pid:42", "pid": 42, "tty": "ttys003"})
+            self.assertIn("ttys003", str(e.exception))
+            with self.assertRaises(SystemExit):
+                hm.CombinedLive(hm.ProcessScan()).focus({"name": "c", "pane_id": "w1:p9"})
+        finally:
+            hm.focus_agent = orig
+        self.assertEqual(focused, ["w1:p2"])
+
+
+class NoHerdrCalls(unittest.TestCase):
+    """COWBELL_MODE=here, no server: a herdr binary that logs and fails is never run (LAB-249)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.log = base / "herdr-calls.log"
+        stub = base / "herdr"
+        stub.write_text(f"#!/bin/sh\necho \"$@\" >> {self.log}\nexit 1\n")
+        stub.chmod(0o755)
+        agent = base / "fake-agent"
+        agent.write_text("#!/bin/sh\necho FAKE-AGENT \"$@\"\n")
+        agent.chmod(0o755)
+        (base / "cfg").mkdir()
+        (base / "cfg" / "harnesses.toml").write_text(
+            f'schema = 1\n[[harness]]\nid = "fake"\nkind = "pi"\ncommand = "{agent}"\nresume = ["--continue"]\n')
+        (base / "state").mkdir()
+        (base / "state" / "roster.json").write_text(json.dumps({"schema": 1, "harnesses": [
+            {"name": "sitting", "cwd": str(base), "harness": "fake", "kind": "pi", "session_id": "s1", "pane_id": "w1:p1"}]}))
+        self.env = {**os.environ, "HERDR_BIN_PATH": str(stub), "HERDR_SOCKET_PATH": str(base / "no.sock"),
+                    "COWBELL_MODE": "here", "COWBELL_PLAIN": "1", "COWBELL_CONFIG_DIR": str(base / "cfg"),
+                    "COWBELL_STATE_DIR": str(base / "state"), "HERDR_PANE_ID": "w1:p1", "PATH": "/usr/bin:/bin"}
+        self.env.pop("HERDR_PLUGIN_CONTEXT_JSON", None)
+        self.env.pop("COWBELL_CTX", None)
+        self.base = base
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_cowbell(self, *args, stdin=""):
+        import subprocess
+        return subprocess.run([sys.executable, str(Hosts.SRC), *args], input=stdin, capture_output=True, text=True,
+                              env=self.env, cwd=self.base, timeout=30)
+
+    def test_status_picker_enter_never_run_herdr(self):
+        status = self.run_cowbell("status")
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("sitting", status.stdout)
+        picker = self.run_cowbell("picker", stdin="q\n")
+        self.assertEqual(picker.returncode, 0, picker.stderr)
+        self.assertIn("Start new", picker.stdout)
+        enter = self.run_cowbell("enter", "sitting")
+        self.assertIn("FAKE-AGENT --continue", enter.stdout, enter.stderr)
+        self.assertFalse(self.log.exists(), self.log.read_text() if self.log.exists() else "")
 
 
 class Standalone(unittest.TestCase):
