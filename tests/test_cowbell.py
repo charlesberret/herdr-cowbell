@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -309,6 +310,103 @@ class Input(unittest.TestCase):
         line, spans = hm.hint_bar([("⏎", "open", "enter"), ("w", "wizard", "w"), ("esc", "close", "esc")])
         self.assertEqual(spans, [(3, 9, "enter"), (12, 20, "w"), (23, 32, "esc")])
         self.assertEqual(hm.visible_len(line), 31)
+
+
+class Paths(unittest.TestCase):
+    """XDG config/state shared by both doors; one-time copy off herdr's plugin dirs (LAB-248)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.cfg, self.state = base / "cfg" / "cowbell", base / "state" / "cowbell"
+        self.old_cfg, self.old_state = base / "old-cfg", base / "old-state"
+        self.seed_root = base / "seed"
+        self.seed_root.mkdir()
+        (self.seed_root / "harnesses.toml").write_text('schema = 1\n[[harness]]\nid = "claude"\n')
+        self.env = {"COWBELL_CONFIG_DIR": str(self.cfg), "COWBELL_STATE_DIR": str(self.state),
+                    "HERDR_PLUGIN_CONFIG_DIR": str(self.old_cfg), "HERDR_PLUGIN_STATE_DIR": str(self.old_state),
+                    "HERDR_PLUGIN_ROOT": str(self.seed_root)}
+        self.saved = {k: os.environ.get(k) for k in self.env}
+        os.environ.update(self.env)
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.tmp.cleanup()
+
+    def legacy(self):
+        self.old_cfg.mkdir()
+        self.old_state.mkdir()
+        catalog = b'# house catalog\n[defaults]\nlane = "yellow"  # kept\n\n[[harness]]\nid = "grok"\n'
+        (self.old_cfg / "harnesses.toml").write_bytes(catalog)
+        rows = [{"name": "butler", "cwd": "/x", "harness": "grok", "session_id": "s1"}]
+        (self.old_state / "roster.json").write_text(json.dumps({"harnesses": rows}))
+        return catalog, rows
+
+    def test_fresh_run_seeds_new_dirs(self):
+        p = hm.catalog_path()
+        self.assertEqual(p, self.cfg / "harnesses.toml")
+        self.assertEqual(p.read_text(), (self.seed_root / "harnesses.toml").read_text())
+        self.assertEqual(hm.load_roster(), [])
+        self.assertFalse((self.cfg / ".migrated_from").exists())
+
+    def test_migrates_byte_faithful_once(self):
+        catalog, rows = self.legacy()
+        self.assertEqual(hm.catalog_path().read_bytes(), catalog)
+        self.assertEqual(hm.load_roster(), rows)
+        backups = sorted(p.name for p in (self.cfg / "migration-backup").iterdir())
+        self.assertEqual(len(backups), 1)
+        self.assertTrue((self.old_cfg / "harnesses.toml").exists())            # copy, not move
+        marker = (self.cfg / ".migrated_from").read_text().splitlines()
+        self.assertEqual(json.loads(marker[0])["from"], str(self.old_cfg / "harnesses.toml"))
+        (self.old_cfg / "harnesses.toml").write_text("# changed later in the old dir\n")
+        hm.catalog_path(); hm.load_roster()                                     # second run
+        self.assertEqual(hm.catalog_path().read_bytes(), catalog)
+        self.assertEqual(sorted(p.name for p in (self.cfg / "migration-backup").iterdir()), backups)
+        self.assertEqual(len((self.cfg / ".migrated_from").read_text().splitlines()), 1)
+
+    def test_missing_seed_and_legacy_means_no_catalog(self):
+        (self.seed_root / "harnesses.toml").unlink()
+        with self.assertRaises(SystemExit):
+            hm.load_catalog()
+
+    def test_xdg_homes_when_no_override(self):
+        for k in ("COWBELL_CONFIG_DIR", "COWBELL_STATE_DIR"):
+            os.environ.pop(k)
+        base = Path(self.tmp.name)
+        os.environ["XDG_CONFIG_HOME"], os.environ["XDG_STATE_HOME"] = str(base / "xc"), str(base / "xs")
+        try:
+            self.assertEqual(hm.config_dir(), base / "xc" / "cowbell")
+            self.assertEqual(hm.state_dir(), base / "xs" / "cowbell")
+        finally:
+            os.environ.pop("XDG_CONFIG_HOME"); os.environ.pop("XDG_STATE_HOME")
+
+    def test_roster_without_schema_is_accepted_and_rewritten(self):
+        _, rows = self.legacy()
+        hm.save_roster(hm.load_roster())
+        data = json.loads((self.state / "roster.json").read_text())
+        self.assertEqual(data["schema"], hm.SCHEMA)
+        self.assertEqual(data["harnesses"], rows)
+
+    def test_newer_roster_is_read_but_never_written(self):
+        self.state.mkdir(parents=True)
+        body = json.dumps({"schema": hm.SCHEMA + 1, "harnesses": [{"name": "a", "cwd": "/x"}], "future": True})
+        (self.state / "roster.json").write_text(body)
+        self.assertEqual([r["name"] for r in hm.load_roster()], ["a"])
+        with self.assertRaises(hm.SchemaError):
+            hm.save_roster([])
+        self.assertEqual((self.state / "roster.json").read_text(), body)
+
+    def test_newer_catalog_loads_and_refuses_writes(self):
+        self.cfg.mkdir(parents=True)
+        (self.cfg / "harnesses.toml").write_text(f'schema = {hm.SCHEMA + 1}\n[[harness]]\nid = "claude"\n')
+        cat = hm.load_catalog()
+        self.assertEqual(cat["harness"][0]["id"], "claude")
+        with self.assertRaises(hm.SchemaError):
+            hm.check_writable(cat["schema"], "harnesses.toml")
 
 
 class Standalone(unittest.TestCase):

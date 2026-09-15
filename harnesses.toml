@@ -1,14 +1,17 @@
 # cowbell — which agents can be started, and how.
 #
-# This is the seed that ships with the plugin. It is copied to the plugin config
-# dir (`herdr plugin config-dir herdr-cowbell`) the first time cowbell runs, and
-# that copy is the one to edit: add your own launchers, models, and presets.
+# This is the seed that ships with cowbell. It is copied to ~/.config/cowbell/
+# (COWBELL_CONFIG_DIR, or $XDG_CONFIG_HOME/cowbell) the first time cowbell runs,
+# and that copy is the one to edit: add your own launchers, models, and presets.
+# The herdr plugin and the `cowbell` command read the same copy.
 # An agent that is not installed simply does not appear in the popup.
 #
 # Each [[harness]] is one way of starting an agent: the executable (a herdr agent
 # kind, or a `command` wrapper), its models, and how it resumes a session.
 # Optional: `trust_tool` names it to agent-deck-trust, if you use that; without
 # the tool, cowbell shows no trust verdicts at all.
+
+schema = 1           # file format; a newer cowbell may raise it, an older one will not write it
 
 [defaults]
 lane = "yellow"      # permissions preset used by Enter (quick start); `n` lets you choose

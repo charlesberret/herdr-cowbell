@@ -47,6 +47,13 @@ hint in the bottom bar is clickable. It refreshes itself every two seconds.
   once they stop. (`cowbell adopt` still exists on the CLI.)
 - A section longer than five rows folds to four and `+ N more`.
 
+Config and state live in `~/.config/cowbell/` and `~/.local/state/cowbell/`
+(`COWBELL_CONFIG_DIR` / `COWBELL_STATE_DIR`, or the XDG homes). Versions up to 0.3
+kept them in herdr's plugin dirs; the first run copies them over once, leaving the
+originals and a dated backup, and records it in `~/.config/cowbell/.migrated_from`.
+Both files carry `schema = 1`; a cowbell that finds a newer schema reads the file but
+will not overwrite it.
+
 Bare `cowbell` still prints the long registry in house vocabulary (session ids,
 cwd, the absent line). Off a terminal, or with `COWBELL_PLAIN=1`, the popup falls
 back to a typed-number prompt. `NO_COLOR` turns colour off.
@@ -56,8 +63,8 @@ back to a typed-number prompt. `NO_COLOR` turns colour off.
 | Word | Means |
 |------|-------|
 | **harness** | A way of raising an agent: executable (kind or house wrapper), model, lane, tools, trust surface. Declared in `harnesses.toml`. |
-| **constitution** | The catalog of harnesses that *may* be raised — `harnesses.toml` in the plugin config dir. Hand-edited. |
-| **roster** | What *has* been raised and where — `roster.json` in the plugin state dir. Machine-written; one row per named harness with its cwd, session id, pane. |
+| **constitution** | The catalog of harnesses that *may* be raised — `~/.config/cowbell/harnesses.toml`, shared by the plugin and the CLI. Hand-edited. |
+| **roster** | What *has* been raised and where — `~/.local/state/cowbell/roster.json`. Machine-written; one row per named harness with its cwd, session id, pane. |
 | **lane** | House shorthand for write/bash knobs (`green` / `yellow` / `red`), mapped to per-kind flags in the catalog. Not a trust model. |
 | **subject / verdict** | From `agent-deck-trust`: the sensitivity class of the directory, and whether a harness is `ok`, over-privileged (`!`, visible), or blocked (`⊘`, refused). cowbell never re-encodes trust law; it asks. |
 

@@ -129,25 +129,75 @@ def plugin_root() -> Path:
     return Path(os.environ.get("HERDR_PLUGIN_ROOT") or Path(__file__).resolve().parent)
 
 
+SCHEMA = 1  # catalog and roster format this cowbell reads and writes
+
+
+class SchemaError(SystemExit):
+    pass
+
+
 def config_dir() -> Path:
-    p = Path(os.environ.get("HERDR_PLUGIN_CONFIG_DIR") or f"~/.config/herdr/plugins/config/{PLUGIN_ID}").expanduser()
+    """~/.config/cowbell (COWBELL_CONFIG_DIR, then XDG_CONFIG_HOME). Shared by the plugin and the CLI."""
+    base = os.environ.get("COWBELL_CONFIG_DIR") or \
+        Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "cowbell"
+    p = Path(base).expanduser()
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def state_dir() -> Path:
-    p = Path(os.environ.get("HERDR_PLUGIN_STATE_DIR") or f"~/.local/state/herdr/plugins/{PLUGIN_ID}").expanduser()
+    """~/.local/state/cowbell (COWBELL_STATE_DIR, then XDG_STATE_HOME)."""
+    base = os.environ.get("COWBELL_STATE_DIR") or \
+        Path(os.environ.get("XDG_STATE_HOME") or "~/.local/state").expanduser() / "cowbell"
+    p = Path(base).expanduser()
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
+def legacy_config_dir() -> Path:
+    """Where 0.1–0.3 kept the catalog (herdr's plugin dir). Read only, as a migration source."""
+    return Path(os.environ.get("HERDR_PLUGIN_CONFIG_DIR")
+                or f"~/.config/herdr/plugins/config/{PLUGIN_ID}").expanduser()
+
+
+def legacy_state_dir() -> Path:
+    return Path(os.environ.get("HERDR_PLUGIN_STATE_DIR")
+                or f"~/.local/state/herdr/plugins/{PLUGIN_ID}").expanduser()
+
+
+def migrate_file(new: Path, old: Path) -> bool:
+    """Copy (never move) old -> new once, byte-faithful; keep a dated backup and a marker. True if copied."""
+    if new.exists() or not old.is_file() or old.resolve() == new.resolve():
+        return False
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = new.parent / "migration-backup" / f"{old.name}.{stamp}"
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(old, backup)
+    tmp = new.with_name(new.name + ".tmp")
+    shutil.copy2(old, tmp)
+    os.replace(tmp, new)
+    marker = new.parent / ".migrated_from"
+    with open(marker, "a") as fh:
+        fh.write(json.dumps({"file": new.name, "from": str(old), "backup": str(backup), "at": now()}) + "\n")
+    return True
+
+
+def check_writable(schema, what: str) -> None:
+    """A file written by a newer cowbell is read, never overwritten."""
+    if isinstance(schema, int) and schema > SCHEMA:
+        raise SchemaError(f"cowbell: {what} is schema {schema}; cowbell {__version__} writes schema {SCHEMA}. "
+                          f"Upgrade cowbell before changing it.")
+
+
 def roster_path() -> Path:
-    return state_dir() / "roster.json"
+    p = state_dir() / "roster.json"
+    migrate_file(p, legacy_state_dir() / "roster.json")
+    return p
 
 
 def catalog_path() -> Path:
     p = config_dir() / "harnesses.toml"
-    if not p.exists():
+    if not migrate_file(p, legacy_config_dir() / "harnesses.toml") and not p.exists():
         seed = plugin_root() / "harnesses.toml"
         if seed.exists():
             shutil.copy2(seed, p)
@@ -338,6 +388,7 @@ def load_catalog() -> dict:
         raise SystemExit(f"cowbell: no catalog at {p}")
     with open(p, "rb") as fh:
         cat = tomllib.load(fh)
+    cat.setdefault("schema", 1)  # a catalog without the key predates it and is schema 1
     cat.setdefault("defaults", {})
     cat.setdefault("lanes", {})
     for h in cat.get("harness", []):
@@ -369,6 +420,15 @@ def installed(h: dict) -> bool:
 
 # --- roster --------------------------------------------------------------------
 
+def roster_schema(p: Path | None = None) -> int:
+    p = p or roster_path()
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return SCHEMA
+    return data.get("schema", 1) if isinstance(data, dict) else 1
+
+
 def load_roster() -> list[dict]:
     p = roster_path()
     if not p.exists():
@@ -378,10 +438,12 @@ def load_roster() -> list[dict]:
 
 
 def save_roster(rows: list[dict]) -> None:
+    p = roster_path()
+    check_writable(roster_schema(p), str(p))
     rows.sort(key=lambda r: (r.get("cwd", ""), r.get("name", "")))
-    tmp = roster_path().with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"harnesses": rows}, indent=2) + "\n")
-    os.replace(tmp, roster_path())
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"schema": SCHEMA, "harnesses": rows}, indent=2) + "\n")
+    os.replace(tmp, p)
 
 
 def roster_here(rows: list[dict], root: str) -> list[dict]:
