@@ -16,14 +16,14 @@ here first).
 ```
   ~/code/notes/nomogenesis            g widen to metawork · 4 running
 
-  Running here
+  Running
     1  nomogenesis-claude     claude      idle
     2  philologist            grok        working  14s   in sys:clubhouse
 
   Resume
     3  kimi-ballots           oll-mid     2 days ago
 
-  Start new
+  New
     4  claude                 Claude Code
     5  oll-mid                kimi k2.7 cloud — default coding
     6  grok                   Grok CLI                           ! asks first
@@ -37,7 +37,7 @@ The popup is mouse-first, like herdr: click or arrow to a row, Enter (or the ⏎
 button) to open it, Esc to close. A digit jumps straight to its row, and every
 hint in the bottom bar is clickable. It refreshes itself every two seconds.
 
-- **Enter on Start new** opens the agent at once with an automatic name
+- **Enter on New** opens the agent at once with an automatic name
   (`claude`, `claude-2`) and the default permissions. Set `ask_name = true` in
   `[defaults]` to be asked for the name first (the house setting: a name claims a seat).
 - **`n` new with options** asks for agent, name, model, and permissions.
@@ -67,7 +67,7 @@ allow_harness = ["claude", "grok"]
 lane = "yellow"
 ```
 
-Anything started at or below `cwd` opens in that workspace, Start new lists only the
+Anything started at or below `cwd` opens in that workspace, New lists only the
 allowed agents, and `cowbell new --place lobby` targets it from anywhere.
 
 Bare `cowbell` still prints the long registry in house vocabulary (session ids,

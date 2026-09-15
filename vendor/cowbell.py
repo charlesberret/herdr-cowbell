@@ -12,7 +12,7 @@
   cowbell catalog               every harness: kind, egress, installed, trust badge
 
 Inside a herdr pane, starting or resuming opens a new herdr tab. Anywhere else it
-runs the agent in this terminal, and Running here also lists agent processes found
+runs the agent in this terminal, and Running also lists agent processes found
 by working directory.
 
 The herdr plugin (herdr-cowbell) adds prefix+c, adopt, stop and import-seats on top of this.
@@ -657,7 +657,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
 
 def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wider: int | None = None,
                   width: int = 84) -> str:
-    """New-tab surface: running here, resume, start new. Numbers are for rows you can open."""
+    """New-tab surface: Running, Resume, New. Numbers are for rows you can open."""
     path = tilde(reg["root"])
     right = reg.get("place_note", "")
     if git_top and wider is not None and wider > len(reg["live"]):
@@ -665,7 +665,7 @@ def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wi
     gap = width - 2 - len(path) - len(right)
     out = [f"  {paint(path, SECONDARY, bold=True)}" + (f"{' ' * max(3, gap)}{paint(right, FAINT)}" if right else "")]
     n = 0
-    for section, title in (("running", "Running here"), ("resume", "Resume"), ("start", "Start new")):
+    for section, title in (("running", "Running"), ("resume", "Resume"), ("start", "New")):
         rows = [c for c in choices if c.get("section") == section]
         if not rows:
             continue
@@ -751,7 +751,7 @@ def live_names(snap: dict) -> set[str]:
 
 
 # --- standalone (outside herdr) -----------------------------------------------------
-# Same picker in any terminal. Running here = herdr's agents (if a server is up) plus agent
+# Same picker in any terminal. Running = herdr's agents (if a server is up) plus agent
 # processes found by cwd; starting or resuming hands this terminal to the agent (exec).
 
 AGENT_EXES = {"claude", "codex", "grok", "gemini", "agy", "opencode", "pi", "cursor-agent", "kimi", "amp",
@@ -1742,7 +1742,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
 
 
 def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
-    """Start new with defaults: automatic name (unless [defaults] ask_name), default permissions, open now."""
+    """New with defaults: automatic name (unless [defaults] ask_name), default permissions, open now."""
     h = harness_by_id(cat, hid)
     if not h:
         print(f"  unknown harness {hid}"); return False
