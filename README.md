@@ -8,8 +8,8 @@ new-tab key: attach to an established harness, or raise one with the model,
 lane, and tools chosen on purpose.
 
 Press `prefix+c` in a directory and cowbell shows the three ways to get an
-agent there: **running here** (agents whose cwd is this directory or below),
-**resume** (ones that stopped and can pick up their session), and **start new**
+agent there: **Running** (agents whose cwd is this directory or below),
+**Resume** (ones that stopped and can pick up their session), and **New**
 (the agents in `harnesses.toml` that are installed and allowed here, most used
 here first).
 
