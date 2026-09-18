@@ -7,7 +7,8 @@
   cowbell status [--json] [--place P]   what is raised here (running · resume · new)
                                 --json: machine rows (sitting, harness, place, cwd, host, state)
   cowbell <harness>             attach to that harness here, or raise it with defaults
-  cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P]
+  cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P] [--spawn]
+                                --spawn: start and return (assemblies raise N times). default: exec here
   cowbell enter <name>          focus if live, else resume
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
@@ -823,7 +824,8 @@ def live_names(snap: dict) -> set[str]:
 
 # --- standalone (outside herdr) -----------------------------------------------------
 # Same picker in any terminal. Running = herdr's agents (if a server is up) plus agent
-# processes found by cwd; starting or resuming hands this terminal to the agent (exec).
+# processes found by cwd. An interactive raise execs into this terminal; a non-tty
+# raise (assemblies, --spawn) starts a new session and returns so N raises can follow.
 
 AGENT_EXES = {"claude", "codex", "grok", "gemini", "agy", "opencode", "pi", "cursor-agent", "kimi", "amp",
               "copilot", "qwen", "droid", "omp", "kilo", "cline", "devin", "hermes", "kiro", "muse", "maki",
@@ -919,23 +921,47 @@ def here_command(cat: dict, h: dict, name: str, model="", lane="", allow="", den
     return ([h["command"]] if is_wrapper(h) else [h["kind"]]) + argv, session
 
 
+def _here_exe(h: dict, cmd: list[str]) -> str:
+    exe = cmd[0] if is_wrapper(h) else shutil.which(cmd[0])
+    if not exe:
+        raise SystemExit(f"cowbell: {cmd[0]} is not on PATH")
+    return exe
+
+
+def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: str, deny: str,
+                 seat: Path | None, session: str, cmd: list[str], pane_id: str | None) -> None:
+    rows = [r for r in load_roster() if r.get("name") != name]
+    rows.append({"name": name, "cwd": root, "harness": h["id"], "kind": h["kind"], "model": model, "lane": lane,
+                 "allow": allow, "deny": deny, "seat": str(seat) if seat else "", "session_id": session,
+                 "pane_id": pane_id, "created": now(), "last_seen": now()[:10], "argv": cmd[1:], "source": "here"})
+    save_roster(rows)
+
+
 def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True):
     """Hand this terminal to the agent. Does not return."""
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
-    exe = cmd[0] if is_wrapper(h) else shutil.which(cmd[0])
-    if not exe:
-        raise SystemExit(f"cowbell: {cmd[0]} is not on PATH")
-    rows = [r for r in load_roster() if r.get("name") != name]
-    rows.append({"name": name, "cwd": root, "harness": h["id"], "kind": h["kind"], "model": model, "lane": lane,
-                 "allow": allow, "deny": deny, "seat": str(seat) if seat else "", "session_id": session,
-                 "pane_id": None, "created": now(), "last_seen": now()[:10], "argv": cmd[1:], "source": "here"})
-    save_roster(rows)
+    exe = _here_exe(h, cmd)
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None)
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
     print(f"  {paint(name, INK, bold=True)}  {paint(shell_join(cmd), MUTED)}  {paint(tilde(root), FAINT)}")
     sys.stdout.flush()
     os.chdir(root)
     os.execv(exe, cmd)
+
+
+def spawn_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", lane="", allow="", deny="",
+               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True) -> dict:
+    """Start the agent in a new session at root and return. Assemblies raise N times this way."""
+    cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
+    exe = _here_exe(h, cmd)
+    proc = subprocess.Popen(
+        [exe, *cmd[1:]], cwd=root, start_new_session=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    pane_id = f"pid:{proc.pid}"
+    _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, pane_id)
+    return {"pane_id": pane_id, "pid": proc.pid}
 
 
 def launch(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", *args, **kw):
@@ -1017,10 +1043,12 @@ class HostLaunch:
 
 
 class HereLaunch(HostLaunch):
-    """Hand this terminal to the agent (exec). Never creates a tab."""
+    """Outside herdr: exec into this terminal, or spawn a new session and return."""
 
     def start(self, cat, h, name, root, ctx, *args, **kw):
-        return exec_here(cat, h, name, root, ctx, *args, **kw)
+        spawn = kw.pop("spawn", False)
+        fn = spawn_here if spawn else exec_here
+        return fn(cat, h, name, root, ctx, *args, **kw)
 
 
 # --- herdr adapter (the only code that runs the herdr CLI) ------------------------------------
@@ -1294,6 +1322,7 @@ class HerdrLaunch(HostLaunch):
     tabs = True
 
     def start(self, cat, h, name, root, ctx, *args, **kw):
+        kw.pop("spawn", None)  # here-only; a herdr tab is already its own session
         return raise_harness(cat, h, name, root, ctx, *args, **kw)
 
 
@@ -1384,7 +1413,7 @@ def gate(cat_h: dict, root: str, interactive: bool, assume_yes: bool) -> dict:
 
 def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="", name="", no_seat=False,
             assume_yes=False, root: str | None = None, extra: list[str] | None = None, focus: bool = True,
-            place: str = "") -> None:
+            place: str = "", spawn=None) -> None:
     if place:
         pl = places(cat).get(place)
         if not pl:
@@ -1413,7 +1442,7 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     gate(h, root, interactive=False, assume_yes=assume_yes)
     base = slug(name or h["id"])
     nm = unique_name(base, live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()})
-    pane = launch(cat, h, nm, root, ctx, model, lane, allow, deny, seat, extra=extra, focus=focus)
+    pane = launch(cat, h, nm, root, ctx, model, lane, allow, deny, seat, extra=extra, focus=focus, spawn=spawn)
     print(f"raised {nm}  {h['id']}{(' ' + model) if model else ''}{(' ' + lane) if lane else ''}  in {pane['pane_id']}  {tilde(root)}")
 
 
@@ -2020,7 +2049,7 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
             rest += args[i + 1:]; break
         if a.startswith("--") and "=" in a:
             k, v = a[2:].split("=", 1); opts[k] = v
-        elif a in ("--yes", "-y", "--all", "--no-seat", "--no-focus", "-i", "--json"):
+        elif a in ("--yes", "-y", "--all", "--no-seat", "--no-focus", "-i", "--json", "--spawn"):
             opts[a.lstrip("-")] = True
         elif a.startswith("--") and i + 1 < len(args):
             opts[a[2:]] = args[i + 1]; i += 1
@@ -2069,7 +2098,7 @@ def main(argv: list[str]) -> int:
         cmd_new(ctx, cat, hid, opts.get("model", ""), opts.get("lane", ""), opts.get("allow", ""), opts.get("deny", ""),
                 opts.get("name", ""), bool(opts.get("no-seat")), bool(opts.get("yes")), opts.get("root"),
                 extra=extra_pos, focus=not opts.get("no-focus"),
-                place=opts.get("place", ""))
+                place=opts.get("place", ""), spawn=bool(opts.get("spawn")))
         return 0
     if harness_by_id(cat, cmd):
         cmd_dispatch(ctx, cat, cmd, bool(opts.get("yes"))); return 0
