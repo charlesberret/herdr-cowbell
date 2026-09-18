@@ -360,9 +360,15 @@ def scoped_catalog(cat: dict, place: dict | None) -> dict:
     out = {**cat, "defaults": {**cat.get("defaults", {})}}
     if place.get("lane"):
         out["defaults"]["lane"] = place["lane"]
+    if place.get("default_harness"):
+        out["defaults"]["default_harness"] = place["default_harness"]
     allow = place.get("allow_harness")
     if allow is not None:
-        out["harness"] = [h for h in cat.get("harness", []) if h["id"] in set(allow)]
+        allowed = set(allow)
+        out["harness"] = [h for h in cat.get("harness", []) if h["id"] in allowed]
+        # keep allow_harness order so a default guest door can sit first
+        order = {hid: i for i, hid in enumerate(allow)}
+        out["harness"].sort(key=lambda h: order.get(h["id"], len(order)))
     return out
 
 
@@ -502,10 +508,14 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         })
         seen_pane.add(a["pane_id"])
 
+    allowed = {h["id"] for h in cat.get("harness", [])}
     cold_rows = []
     for r in rows_here:
         if r.get("pane_id") in seen_pane:
             continue
+        hid = r.get("harness") or r.get("kind") or ""
+        if allowed and hid not in allowed:
+            continue  # place catalog: do not offer resume of a harness the door does not admit
         pane_alive = r.get("pane_id") in pane_ids and r.get("pane_id") not in live_by_pane
         cold_rows.append({**r, "status": "unknown" if pane_alive else "cold", "pane_alive": pane_alive})
 
@@ -525,7 +535,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         if h["id"] not in present:
             absent.append(row)
     return {"root": root, "subject": subject, "live": live_rows, "cold": cold_rows, "absent": absent,
-            "startable": startable}
+            "startable": startable, "default_harness": cat.get("defaults", {}).get("default_harness", "")}
 
 
 def render_registry(reg: dict, git_top: str | None = None, wider: int | None = None) -> str:
@@ -583,8 +593,9 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
 FOLD = 5  # a section longer than this shows FOLD-1 rows and a "+ N more" row
 
 
-def rank_harnesses(ids: list[str], roster: list[dict], root: str) -> list[str]:
-    """Most used here first (a start at or beneath root counts 3), then anywhere, then catalog order."""
+def rank_harnesses(ids: list[str], roster: list[dict], root: str, default: str = "") -> list[str]:
+    """Most used here first (a start at or beneath root counts 3), then anywhere, then catalog order.
+    A place default_harness stays first so usage of a house grok in the pad does not bury the guest door."""
     order = {hid: i for i, hid in enumerate(ids)}
     score: dict[str, int] = {}
     latest: dict[str, str] = {}
@@ -595,7 +606,10 @@ def rank_harnesses(ids: list[str], roster: list[dict], root: str) -> list[str]:
         score[hid] = score.get(hid, 0) + (3 if r.get("cwd") and at_or_beneath(r["cwd"], root) else 1)
         latest[hid] = max(latest.get(hid, ""), r.get("last_seen") or r.get("created") or "")
     out = sorted(ids, key=lambda h: latest.get(h, ""), reverse=True)  # stable: ties keep catalog order
-    return sorted(out, key=lambda h: -score.get(h, 0))
+    out = sorted(out, key=lambda h: -score.get(h, 0))
+    if default and default in out:
+        out = [default] + [h for h in out if h != default]
+    return out
 
 
 def ago(stamp: str, today: _dt.date | None = None) -> str:
@@ -647,7 +661,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
     pool = {a["harness"]: a for a in reg.get("startable", reg["absent"])
             if a.get("installed") and a.get("trust", {}).get("verdict") != "blocked"}
     start = []
-    ranked = rank_harnesses(list(pool), roster or [], reg["root"])
+    ranked = rank_harnesses(list(pool), roster or [], reg["root"], default=reg.get("default_harness") or "")
     shown = ranked if "start" in expanded or len(ranked) <= FOLD else ranked[:FOLD - 1]
     title_w = min(34, max((len(pool[h].get("title") or "") for h in shown), default=0))
     for hid in ranked:
@@ -1253,6 +1267,8 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None) -> dict:
 
 
 def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
+    root, place, _ = resolve_root(cat, root or ctx.cwd)
+    scoped = scoped_catalog(cat, place)
     rows = load_roster()
     hits = [r for r in rows if r["name"] == name] or [r for r in rows if name in r["name"]]
     if len(hits) != 1:
@@ -1266,9 +1282,12 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
         if r.get("pane_id") and a.get("pane_id") == r.get("pane_id"):
             print(ctx.live.focus({**a, "name": r["name"]}))
             return
-    h = harness_by_id(cat, r.get("harness") or r.get("kind") or "")
+    hid = r.get("harness") or r.get("kind") or ""
+    h = harness_by_id(scoped, hid)
     if not h:
-        raise SystemExit(f"cowbell: {r['name']} uses harness {r.get('harness')!r} which is not in the catalog")
+        where = f"place {place['name']}" if place else "this catalog"
+        raise SystemExit(f"cowbell: {r['name']} uses harness {hid!r} which may not resume in {where}")
+    cat = scoped
     seat = Path(r["seat"]) if r.get("seat") and Path(r["seat"]).is_file() else None
     pane = launch(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""), r.get("lane", ""),
                          r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""))
@@ -1315,6 +1334,10 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
         root = pl["cwd"]
     root, pl, _ = resolve_root(cat, root or ctx.cwd)
     scoped = scoped_catalog(cat, pl)
+    if not hid:
+        hid = (pl or {}).get("default_harness") or scoped.get("defaults", {}).get("default_harness") or ""
+        if not hid:
+            raise SystemExit("new --harness <id> (or set default_harness on the place)")
     if pl and harness_by_id(cat, hid) and not harness_by_id(scoped, hid):
         raise SystemExit(f"cowbell: {hid} may not start in place {pl['name']} "
                          f"(allowed: {', '.join(pl.get('allow_harness') or []) or 'none'})")
@@ -1983,11 +2006,10 @@ def main(argv: list[str]) -> int:
         cmd_enter(ctx, cat, pos[0]); return 0
     if cmd == "new":
         hid = opts.get("harness") or (pos[0] if pos else "")
-        if not hid:
-            raise SystemExit("new --harness <id> [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--no-seat] [--yes]")
+        extra_pos = pos[1:] if pos and pos[0] == hid else (pos if not hid else pos)
         cmd_new(ctx, cat, hid, opts.get("model", ""), opts.get("lane", ""), opts.get("allow", ""), opts.get("deny", ""),
                 opts.get("name", ""), bool(opts.get("no-seat")), bool(opts.get("yes")), opts.get("root"),
-                extra=pos[1:] if pos and pos[0] == hid else pos, focus=not opts.get("no-focus"),
+                extra=extra_pos, focus=not opts.get("no-focus"),
                 place=opts.get("place", ""))
         return 0
     if harness_by_id(cat, cmd):

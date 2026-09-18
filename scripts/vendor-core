@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copy the cowbell core into vendor/ and pin the plugin to it.
 
-    scripts/vendor-core [CORE_TREE]      (default: the core tree, or $COWBELL_CORE_TREE)
+    scripts/vendor-core [CORE_TREE]      (default: $COWBELL_CORE_TREE, else ../cowbell)
 
 Copies cowbell.py and the seed harnesses.toml, records the source commit in
 vendor/VENDORED.json, and sets herdr-plugin.toml's version to the core's. The
@@ -21,7 +21,7 @@ PLUGIN_ONLY = ("keys_install_text", "def cmd_open", "picker_open_args", "def imp
 
 
 def main(argv: list[str]) -> int:
-    core = Path(argv[0] if argv else os.environ.get("COWBELL_CORE_TREE", "the core tree")).expanduser()
+    core = Path(argv[0] if argv else os.environ.get("COWBELL_CORE_TREE") or PLUGIN.parent / "cowbell").expanduser()
     src = core / "cowbell.py"
     if not src.is_file():
         print(f"vendor-core: no cowbell.py in {core}", file=sys.stderr)
@@ -43,7 +43,7 @@ def main(argv: list[str]) -> int:
     shutil.copy2(src, vendor / "cowbell.py")
     shutil.copy2(core / "harnesses.toml", vendor / "harnesses.toml")
     (vendor / "VENDORED.json").write_text(json.dumps({
-        "version": version, "commit": commit, "dirty": dirty, "source": str(core),
+        "version": version, "commit": commit, "dirty": dirty,
         "at": dt.datetime.now().isoformat(timespec="seconds")}, indent=2) + "\n")
     manifest = PLUGIN / "herdr-plugin.toml"
     mtext = manifest.read_text()
