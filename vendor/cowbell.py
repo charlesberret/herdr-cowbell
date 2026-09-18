@@ -4,7 +4,8 @@
   cowbell                       on a terminal: the picker (running here · resume · start new)
                                 piped: the long registry, same as `cowbell status`
   cowbell --version             one line, `cowbell X.Y.Z` (the plugin shim compares it)
-  cowbell status                what is raised here (live · cold · absent), with trust
+  cowbell status [--json] [--place P]   what is raised here (running · resume · new)
+                                --json: machine rows (sitting, harness, place, cwd, host, state)
   cowbell <harness>             attach to that harness here, or raise it with defaults
   cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P]
   cowbell enter <name>          focus if live, else resume
@@ -536,6 +537,54 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
             absent.append(row)
     return {"root": root, "subject": subject, "live": live_rows, "cold": cold_rows, "absent": absent,
             "startable": startable, "default_harness": cat.get("defaults", {}).get("default_harness", "")}
+
+
+def row_host(r: dict) -> str:
+    """Where the sitting is attached: a herdr pane, this terminal, or nowhere (cold)."""
+    pane = str(r.get("pane_id") or "")
+    if pane.startswith("pid:") or r.get("tty"):
+        return "tty"
+    if pane and pane != "gone":
+        return "herdr pane"
+    return "none"
+
+
+def registry_json(reg: dict, place: dict | None = None) -> dict:
+    """Running / resume / new as the picker names them, for assemblies that cannot scrape the TUI."""
+    place_name = (place or {}).get("name") or ""
+    root = reg.get("root") or ""
+
+    def sitting_row(r: dict) -> dict:
+        return {
+            "sitting": r.get("name") or "",
+            "harness": r.get("harness") or r.get("kind") or "",
+            "place": place_name,
+            "cwd": r.get("cwd") or "",
+            "host": row_host(r),
+            "state": r.get("status") or "",
+            "pane_id": r.get("pane_id") or "",
+            "session_id": r.get("session_id") or "",
+        }
+
+    def new_row(a: dict) -> dict:
+        return {
+            "sitting": "",
+            "harness": a.get("harness") or "",
+            "place": place_name,
+            "cwd": root,
+            "host": "none",
+            "state": "new",
+            "installed": bool(a.get("installed")),
+            "trust": (a.get("trust") or {}).get("verdict") or "unknown",
+        }
+
+    return {
+        "root": root,
+        "place": place_name,
+        "running": [sitting_row(r) for r in reg.get("live") or []],
+        "resume": [sitting_row(r) for r in reg.get("cold") or []],
+        "new": [new_row(a) for a in reg.get("absent") or []],
+    }
 
 
 def render_registry(reg: dict, git_top: str | None = None, wider: int | None = None) -> str:
@@ -1250,7 +1299,13 @@ class HerdrLaunch(HostLaunch):
 
 # --- commands ------------------------------------------------------------------
 
-def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None) -> dict:
+def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = False,
+                 place_name: str = "") -> dict:
+    if place_name:
+        pl = places(cat).get(place_name)
+        if not pl:
+            raise SystemExit(f"cowbell: no place {place_name!r} in {catalog_path()} (have: {', '.join(places(cat)) or 'none'})")
+        root = pl["cwd"]
     root, place, _ = resolve_root(cat, root or ctx.cwd)
     cat = scoped_catalog(cat, place)
     rows = load_roster()
@@ -1258,6 +1313,9 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None) -> dict:
     agents, panes = ctx.live.agents(), ctx.live.panes()
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
                          tab_label=tab_labels(ctx.live.snapshot()))
+    if as_json:
+        print(json.dumps(registry_json(reg, place), indent=2))
+        return reg
     top = git_root(root)
     wider = None
     if top and os.path.realpath(top) != os.path.realpath(root):
@@ -1962,7 +2020,7 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
             rest += args[i + 1:]; break
         if a.startswith("--") and "=" in a:
             k, v = a[2:].split("=", 1); opts[k] = v
-        elif a in ("--yes", "-y", "--all", "--no-seat", "--no-focus", "-i"):
+        elif a in ("--yes", "-y", "--all", "--no-seat", "--no-focus", "-i", "--json"):
             opts[a.lstrip("-")] = True
         elif a.startswith("--") and i + 1 < len(args):
             opts[a[2:]] = args[i + 1]; i += 1
@@ -1995,7 +2053,8 @@ def main(argv: list[str]) -> int:
     if cmd == "picker":
         return picker(ctx, cat)
     if cmd in ("registry", "here", "status"):
-        cmd_registry(ctx, cat, opts.get("root")); return 0
+        cmd_registry(ctx, cat, opts.get("root"), as_json=bool(opts.get("json")),
+                     place_name=opts.get("place") or ""); return 0
     if cmd == "list":
         cmd_list(ctx, bool(opts.get("all"))); return 0
     if cmd == "catalog":
