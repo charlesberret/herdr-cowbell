@@ -68,9 +68,9 @@ herdr refuses to install over a linked plugin.
 The popup is mouse-first: click or arrow to a row, Enter (or the ⏎ button) to
 open, Esc to close. Digits jump to a row, every hint in the bottom bar is
 clickable, and the list refreshes every two seconds without losing your place.
-`! asks first` marks an agent that would run with more privileges than the
-directory warrants, if you have a trust checker configured; without one, no such
-marks appear.
+`! vendor · writes` (dim) marks a vendor-hosted agent with write tools in a
+folder classed internal. It is advisory and never blocks; only `⊘` does. It
+appears only if you have a trust checker configured.
 
 ## Which agents it can start
 
