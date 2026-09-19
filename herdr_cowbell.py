@@ -2,7 +2,7 @@
 """herdr-cowbell — the herdr skin over cowbell.
 
   bin/cowbell open                 open the picker popup for the caller's directory (prefix+c)
-  bin/cowbell adopt [name]         put the focused agent pane on the roster
+  bin/cowbell adopt [name]         put the focused agent pane on the roster (core)
   bin/cowbell stop <name>          ctrl-c a running sitting; the roster keeps it
   bin/cowbell import-seats         pull herdr-seats' seats.json into the roster
   bin/cowbell keys install|uninstall   bind / restore prefix+c
@@ -137,39 +137,6 @@ def cmd_open(env=None) -> int:
 
 
 # --- adopt / stop / import-seats --------------------------------------------------
-
-def cmd_adopt(name: str | None = None) -> None:
-    cb = core()
-    ctx = cb.choose_host(cb.server_up())
-    pane_id = ctx.pane_id
-    if not pane_id:
-        focused = [a for a in ctx.live.agents() if a.get("focused")]
-        pane_id = focused[0]["pane_id"] if focused else None
-    if not pane_id:
-        raise SystemExit("cowbell: no focused pane to adopt")
-    info = cb.herdr("agent", "get", pane_id)
-    a = info.get("agent") or info
-    kind = a.get("agent") or ""
-    if not kind:
-        raise SystemExit(f"cowbell: pane {pane_id} hosts no recognized agent")
-    sitting = cb.tab_labels(ctx.live.snapshot()).get(a.get("tab_id") or "", "")
-    title = a.get("terminal_title_stripped") or ""
-    noisy = (not title or title.startswith("-") or " - grok " in title.lower()
-             or "waiting" in title.lower() or "running:" in title.lower())
-    base = cb.slug(name or sitting or (title if not noisy else kind))
-    rows = cb.load_roster()
-    nm = cb.unique_name(base, {r["name"] for r in rows if r.get("pane_id") != a.get("pane_id")})
-    rows = [r for r in rows if r.get("pane_id") != a.get("pane_id")]
-    h = cb.harness_by_id(cb.load_catalog(), kind)
-    rows.append({
-        "name": nm, "cwd": a.get("cwd") or ctx.cwd, "harness": h["id"] if h else kind, "kind": kind,
-        "model": "", "lane": "", "session_id": (a.get("agent_session") or {}).get("value") or "",
-        "pane_id": a.get("pane_id") or pane_id, "tab_id": a.get("tab_id"), "workspace_id": a.get("workspace_id"),
-        "label": title or nm, "created": cb.now(), "source": "adopt",
-    })
-    cb.save_roster(rows)
-    print(f"adopted {nm}  {kind}  {cb.tilde(a.get('cwd') or ctx.cwd)}")
-
 
 def cmd_stop(name: str) -> None:
     cb = core()
@@ -319,11 +286,14 @@ def plugin_main(argv: list[str]) -> int:
         cmd_keys(rest[0] if rest else "install"); return 0
     if cmd == "import-seats":
         print(f"imported {import_seats()} seats from herdr-seats"); return 0
+    if cmd == "adopt":
+        exe = choose_core()
+        if exe:
+            os.execv(exe, [exe, "adopt", *rest])
+        return core().main(["adopt", *rest])
     cb = core()
     if not cb.server_up():
         print(f"cowbell: {cmd} needs a running Herdr server", file=sys.stderr); return 2
-    if cmd == "adopt":
-        cmd_adopt(rest[0] if rest else None); return 0
     if not rest:
         raise SystemExit("stop <name>")
     cmd_stop(rest[0]); return 0

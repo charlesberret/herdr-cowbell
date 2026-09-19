@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 PLUGIN = Path(__file__).resolve().parent.parent
-PLUGIN_ONLY = ("keys_install_text", "def cmd_open", "picker_open_args", "def import_seats", "def cmd_adopt")
+PLUGIN_ONLY = ("keys_install_text", "def cmd_open", "picker_open_args", "def import_seats")
 
 
 def main(argv: list[str]) -> int:

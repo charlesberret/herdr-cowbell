@@ -43,7 +43,7 @@ class Packaging(unittest.TestCase):
 
     def test_vendored_core_is_pinned_and_clean(self):
         text = (ROOT / "vendor" / "cowbell.py").read_text()
-        for name in ("keys_install_text", "def cmd_open", "picker_open_args", "def import_seats", "def cmd_adopt"):
+        for name in ("keys_install_text", "def cmd_open", "picker_open_args", "def import_seats"):
             self.assertNotIn(name, text)
         pin = json.loads((ROOT / "vendor" / "VENDORED.json").read_text())
         version = ".".join(map(str, hm.vendored_version()))

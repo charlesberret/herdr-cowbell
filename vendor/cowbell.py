@@ -10,6 +10,7 @@
   cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P] [--spawn]
                                 --spawn: start and return (assemblies raise N times). default: exec here
   cowbell enter <name>          focus if live, else resume
+  cowbell adopt [name] [--pane ID]  put a live sitting cowbell did not start on the roster
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
 
@@ -17,7 +18,7 @@ Inside a herdr pane, starting or resuming opens a new herdr tab. Anywhere else i
 runs the agent in this terminal, and Running also lists agent processes found
 by working directory.
 
-The herdr plugin (herdr-cowbell) adds prefix+c, adopt, stop and import-seats on top of this.
+The herdr plugin (herdr-cowbell) adds prefix+c, stop and import-seats on top of this.
 
 Stdlib only; python >= 3.11 (tomllib). fzf is optional.
 """
@@ -1118,6 +1119,11 @@ def live_agents() -> list[dict]:
         return []
 
 
+def agent_get(pane_id: str) -> dict:
+    info = herdr("agent", "get", pane_id)
+    return info.get("agent") or info
+
+
 def live_panes() -> list[dict]:
     try:
         return herdr("pane", "list").get("panes") or []
@@ -1379,6 +1385,68 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
     pane = launch(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""), r.get("lane", ""),
                          r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""))
     print(f"resumed {r['name']} ({h['id']}) in {pane['pane_id']}")
+
+
+def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None) -> dict:
+    """A live herdr pane or process-scan row to put on the roster."""
+    agents = ctx.live.agents()
+    if pane_id:
+        hits = [a for a in agents if a.get("pane_id") == pane_id]
+        if len(hits) != 1:
+            raise SystemExit(f"cowbell: no live agent in pane {pane_id}")
+        return hits[0]
+    if ctx.pane_id:
+        hits = [a for a in agents if a.get("pane_id") == ctx.pane_id]
+        if hits:
+            return hits[0]
+    focused = [a for a in agents if a.get("focused")]
+    if focused:
+        return focused[0]
+    here = [a for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], ctx.cwd)]
+    if len(here) == 1:
+        return here[0]
+    if len(agents) == 1:
+        return agents[0]
+    raise SystemExit("cowbell: no focused pane to adopt (pass --pane ID)")
+
+
+def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None = None) -> dict:
+    """Bind a live sitting cowbell did not start onto the roster. Returns the new row."""
+    a = live_agent_to_adopt(ctx, pane_id)
+    kind = a.get("agent") or ""
+    if not kind:
+        raise SystemExit(f"cowbell: pane {a.get('pane_id')} hosts no recognized agent")
+    if getattr(ctx.live, "herdr", False) and not str(a.get("pane_id") or "").startswith("pid:"):
+        try:
+            extra = agent_get(a["pane_id"])
+            if extra:
+                a = {**a, **extra}
+                kind = a.get("agent") or kind
+        except HerdrError:
+            pass
+    snap = ctx.live.snapshot()
+    sitting = tab_labels(snap).get(a.get("tab_id") or "", "")
+    title = a.get("terminal_title_stripped") or ""
+    noisy = (not title or title.startswith("-") or " - grok " in title.lower()
+             or "waiting" in title.lower() or "running:" in title.lower())
+    base = slug(name or sitting or (title if not noisy else kind))
+    rows = load_roster()
+    nm = unique_name(base, {r["name"] for r in rows if r.get("pane_id") != a.get("pane_id")})
+    rows = [r for r in rows if r.get("pane_id") != a.get("pane_id")]
+    h = harness_by_id(cat, kind)
+    cwd = a.get("cwd") or ctx.cwd
+    place = place_for(cat, cwd)
+    row = {
+        "name": nm, "cwd": cwd, "harness": h["id"] if h else kind, "kind": kind,
+        "model": "", "lane": "", "session_id": (a.get("agent_session") or {}).get("value") or "",
+        "pane_id": a.get("pane_id"), "tab_id": a.get("tab_id"), "workspace_id": a.get("workspace_id"),
+        "label": title or nm, "created": now(), "source": "adopt",
+        "place": (place or {}).get("name") or "",
+    }
+    rows.append(row)
+    save_roster(rows)
+    print(f"adopted {nm}  {kind}  {tilde(cwd)}")
+    return row
 
 
 def cmd_list(ctx: Ctx, all_rows: bool) -> None:
@@ -1891,8 +1959,8 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
     return True
 
 
-PICKER_HINTS = [("⏎", "open", "enter"), ("n", "new with options", "n"), ("g", "widen", "g"),
-                ("esc", "close", "esc")]
+PICKER_HINTS = [("⏎", "open", "enter"), ("n", "new with options", "n"), ("a", "adopt", "a"),
+                ("g", "widen", "g"), ("esc", "close", "esc")]
 REFRESH_S = 2.0
 
 
@@ -1968,7 +2036,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 selected = keys.index(sel_key) if sel_key in keys else min(sel_at, max(0, len(keys) - 1))
                 hints = [hh for hh in PICKER_HINTS if hh[2] != "g" or can_widen]
                 res = menu([""] + text.split("\n"), [c["row"] + 1 for c in choices], hints,
-                           selected=selected, hotkeys="nwg", flash=flash,
+                           selected=selected, hotkeys="nwga", flash=flash,
                            line_keys={1: "g"} if can_widen else None,
                            numbered=[i for i, c in enumerate(choices) if c.get("idx")], scr=scr, tick=REFRESH_S)
                 if res[0] in ("pick", "tick") and choices:
@@ -2000,6 +2068,14 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if raw == "g":
                 root = top or root
                 sel_key = ""
+                continue
+            if raw == "a":
+                pane = (hit["target"].get("pane_id") if hit and hit.get("action") == "focus" else None)
+                try:
+                    cmd_adopt(ctx, full_cat, pane_id=pane)
+                    flash = "adopted"
+                except SystemExit as e:
+                    flash = str(e)
                 continue
             if raw not in ("w", "n") and not hit:
                 continue
@@ -2049,7 +2125,8 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
             rest += args[i + 1:]; break
         if a.startswith("--") and "=" in a:
             k, v = a[2:].split("=", 1); opts[k] = v
-        elif a in ("--yes", "-y", "--all", "--no-seat", "--no-focus", "-i", "--json", "--spawn"):
+        elif a in ("--yes", "-y", "--all", "--no-seat", "--no-focus", "-i", "--json", "--spawn",
+                   "--help", "-h"):
             opts[a.lstrip("-")] = True
         elif a.startswith("--") and i + 1 < len(args):
             opts[a[2:]] = args[i + 1]; i += 1
@@ -2076,9 +2153,14 @@ def main(argv: list[str]) -> int:
     if not argv:
         argv = ["picker"] if tui_ok() else ["status"]
     cmd, *rest = argv
+    opts, pos = parse_flags(rest)
+    if cmd == "adopt" and (opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))):
+        print("cowbell adopt [name] [--pane ID]")
+        print("  Bind a live sitting cowbell did not start onto the roster.")
+        print("  Default: the focused herdr pane, or the only live agent here.")
+        return 0
     ctx = choose_host(server_up())
     cat = load_catalog()
-    opts, pos = parse_flags(rest)
     if cmd == "picker":
         return picker(ctx, cat)
     if cmd in ("registry", "here", "status"):
@@ -2092,6 +2174,9 @@ def main(argv: list[str]) -> int:
         if not pos:
             raise SystemExit("enter <name>")
         cmd_enter(ctx, cat, pos[0]); return 0
+    if cmd == "adopt":
+        cmd_adopt(ctx, cat, name=pos[0] if pos else None, pane_id=opts.get("pane"))
+        return 0
     if cmd == "new":
         hid = opts.get("harness") or (pos[0] if pos else "")
         extra_pos = pos[1:] if pos and pos[0] == hid else (pos if not hid else pos)
