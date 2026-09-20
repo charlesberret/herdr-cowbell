@@ -5,7 +5,7 @@
                                 piped: the long registry, same as `cowbell status`
   cowbell --version             one line, `cowbell X.Y.Z` (the plugin shim compares it)
   cowbell status [--json] [--place P]   what is raised here (running · resume · new)
-                                --json: machine rows (sitting, harness, place, cwd, host, state)
+                                --json: machine rows (name, harness, place, cwd, host, state)
   cowbell <harness>             attach to that harness here, or raise it with defaults
   cowbell new --harness ID [--model M] [--lane L] [--allow T] [--deny T] [--name N] [--place P] [--spawn]
                                 --spawn: start and return (assemblies raise N times). default: exec here
@@ -57,7 +57,7 @@ class HerdrError(RuntimeError):
 
 
 # --- colour ------------------------------------------------------------------
-# House Kettle Dark (~/.config/herdr/config.toml [theme.custom]). Mostly grey
+# Palette: mostly grey, with one accent. Reads the terminal theme, not a config file.
 # hierarchy; gold is spent on the one thing to press (the numbers and the prompt).
 # State words borrow the sidebar's chroma; red only for a trust warning.
 
@@ -100,8 +100,10 @@ def verdict_cell(v: dict) -> str:
 
 
 def header(reg: dict, git_top: str | None, wider: int | None, widen_hint: bool = True) -> list[str]:
+    note = reg.get("place_note") or ""
     out = [f"  {paint('cowbell', INK, bold=True)}  {paint(tilde(reg['root']), SECONDARY)}   "
-           f"{paint('subject:', FAINT)} {paint(reg['subject'] or '?', MUTED)}"]
+           f"{paint('subject:', FAINT)} {paint(reg['subject'] or '?', MUTED)}"
+           + (f"   {paint('place:', FAINT)} {paint(note, MUTED)}" if note else "")]
     if git_top and os.path.realpath(git_top) != os.path.realpath(reg["root"]):
         hint = f"   ({wider} live under it)" if wider is not None else ""
         out.append(paint(f"  git root: {tilde(git_top)}{hint}", FAINT)
@@ -260,11 +262,11 @@ def git_root(path: str) -> str | None:
 
 
 def seat_file(root: str, home: str | None = None) -> Path | None:
-    """Nearest SEAT.md walking up from root, stopping at $HOME (never inject home)."""
+    """Nearest EXT["seat_file"] walking up from root, stopping at $HOME (never inject home)."""
     home = os.path.realpath(home or Path.home())
     d = os.path.realpath(root)
     while True:
-        cand = Path(d) / "SEAT.md"
+        cand = Path(d) / EXT["seat_file"]
         if cand.is_file():
             return cand
         if d in (home, "/"):
@@ -305,6 +307,26 @@ def unique_name(base: str, taken: set[str]) -> str:
 
 # --- catalog -------------------------------------------------------------------
 
+# Two hooks onto tools cowbell does not own, overridable in [defaults].
+# trust_command: asked `subject <path>`, `match <tool> <path>`, `badge <tool>`;
+# absent from PATH means no trust verdicts at all. seat_file: a brief found by
+# walking up from the directory, handed to a harness via its system_prompt_flag.
+EXT = {"trust_command": "harness-trust", "seat_file": "SEAT.md"}
+
+
+def apply_ext(cat: dict) -> None:
+    d = cat.get("defaults", {})
+    for key in EXT:
+        v = d.get(key)
+        if isinstance(v, str) and v.strip():
+            EXT[key] = v.strip()
+
+
+def prompt_flag(h: dict) -> str | None:
+    """Flag that hands a harness a system-prompt file (`seat_flag` until 0.3)."""
+    return h.get("system_prompt_flag") or h.get("seat_flag")
+
+
 def load_catalog() -> dict:
     if tomllib is None:
         raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
@@ -316,6 +338,7 @@ def load_catalog() -> dict:
     cat.setdefault("schema", 1)  # a catalog without the key predates it and is schema 1
     cat.setdefault("defaults", {})
     cat.setdefault("lanes", {})
+    apply_ext(cat)
     for h in cat.get("harness", []):
         h.setdefault("kind", h["id"])
         h.setdefault("family", h["kind"])
@@ -341,7 +364,8 @@ def places(cat: dict) -> dict[str, dict]:
 
 
 def place_for(cat: dict, root: str) -> dict | None:
-    """The deepest place whose directory holds root."""
+    """The deepest place whose directory holds root (longest cwd wins; equal-length
+    ties go to the first place declared in the catalog)."""
     hits = [p for p in places(cat).values() if at_or_beneath(os.path.realpath(root), p["cwd"])]
     return max(hits, key=lambda p: len(p["cwd"]), default=None)
 
@@ -432,16 +456,16 @@ def tab_labels(snap: dict) -> dict[str, str]:
     return {t["tab_id"]: (t.get("label") or "") for t in snap.get("tabs") or [] if t.get("tab_id")}
 
 
-# --- trust (delegated to agent-deck-trust; never re-encoded here) --------------------
+# --- trust (delegated to EXT["trust_command"]; never re-encoded here) ----------------
 
 def trust_available() -> bool:
-    return shutil.which("agent-deck-trust") is not None
+    return shutil.which(EXT["trust_command"]) is not None
 
 
 def trust_subject(root: str) -> str:
     if not trust_available():
         return "?"
-    proc = subprocess.run(["agent-deck-trust", "subject", root], capture_output=True, text=True)
+    proc = subprocess.run([EXT["trust_command"], "subject", root], capture_output=True, text=True)
     return proc.stdout.strip() or "?"
 
 
@@ -462,7 +486,7 @@ def parse_match(text: str, code: int) -> dict:
 def trust_match(tool: str, root: str) -> dict:
     if not trust_available():
         return {"verdict": "unknown", "flag": "?", "exit": -1}
-    proc = subprocess.run(["agent-deck-trust", "match", tool, root], capture_output=True, text=True)
+    proc = subprocess.run([EXT["trust_command"], "match", tool, root], capture_output=True, text=True)
     if proc.returncode not in (0, 3, 4):
         return {"verdict": "unknown", "flag": "?", "exit": proc.returncode}
     return parse_match(proc.stdout, proc.returncode)
@@ -471,7 +495,7 @@ def trust_match(tool: str, root: str) -> dict:
 def trust_badge(tool: str) -> str:
     if not trust_available():
         return "?"
-    proc = subprocess.run(["agent-deck-trust", "badge", tool], capture_output=True, text=True)
+    proc = subprocess.run([EXT["trust_command"], "badge", tool], capture_output=True, text=True)
     return proc.stdout.strip() or "?"
 
 
@@ -491,6 +515,13 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
     pane_ids = {p.get("pane_id") for p in panes}
     rows_here = roster_here(roster, root)
     by_pane: dict[str, dict] = {str(r["pane_id"]): r for r in rows_here if r.get("pane_id")}
+    # identify an exe by catalog: a kind only one harness in this catalog has is that harness
+    # id; a kind several share (pi wrappers) stays the exe name. LAB-294.
+    kind_id: dict[str, str] = {}
+    for h in cat.get("harness", []):
+        prev = kind_id.setdefault(h["kind"], h["id"])
+        if prev != h["id"]:
+            kind_id[h["kind"]] = ""
 
     live_rows, seen_pane = [], set()
     for a in live:
@@ -499,10 +530,11 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
         live_rows.append({
             "name": ((r or {}).get("name") or (slug(lab) if lab else "")
                      or slug(a.get("terminal_title_stripped") or a.get("agent") or "agent")),
-            "harness": (r or {}).get("harness") or a.get("agent"),
+            "harness": (r or {}).get("harness") or kind_id.get(a.get("agent") or "", "") or a.get("agent"),
             "kind": a.get("agent"), "model": (r or {}).get("model", ""), "lane": (r or {}).get("lane", ""),
             "status": a.get("agent_status") or "live", "pane_id": a["pane_id"], "tab_id": a.get("tab_id"),
             "workspace_id": a.get("workspace_id"), "cwd": a.get("cwd"),
+            "place": (place_for(cat, a.get("cwd") or "") or {}).get("name") or "",
             "session_id": (a.get("agent_session") or {}).get("value") or (r or {}).get("session_id", ""),
             "on_roster": r is not None,
             # turn clock, only where a sidebar reporter publishes one ($since while working, $total when done)
@@ -558,9 +590,9 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
 
     def sitting_row(r: dict) -> dict:
         return {
-            "sitting": r.get("name") or "",
+            "name": r.get("name") or "",
             "harness": r.get("harness") or r.get("kind") or "",
-            "place": place_name,
+            "place": r.get("place") or place_name,
             "cwd": r.get("cwd") or "",
             "host": row_host(r),
             "state": r.get("status") or "",
@@ -570,7 +602,7 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
 
     def new_row(a: dict) -> dict:
         return {
-            "sitting": "",
+            "name": "",
             "harness": a.get("harness") or "",
             "place": place_name,
             "cwd": root,
@@ -584,7 +616,8 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
         "root": root,
         "place": place_name,
         "running": [sitting_row(r) for r in reg.get("live") or []],
-        "resume": [sitting_row(r) for r in reg.get("cold") or []],
+        # Resume only what can resume: a row without a session id would just start fresh (LAB-298).
+        "resume": [sitting_row(r) for r in reg.get("cold") or [] if r.get("session_id")],
         "new": [new_row(a) for a in reg.get("absent") or []],
     }
 
@@ -604,9 +637,12 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
             out.append(f"  {key(idx)}  {paint(name, INK, bold=True)} {paint(harness, MUTED)} "
                        f"{status_cell(r['status'], 9)} {paint(rest, FAINT)}")
     if reg["cold"]:
-        out.append("")
-        out.append(section("COLD HERE", "resumable"))
-        for r in reg["cold"]:
+        # Resume only what can resume: a row without a session id would just start fresh (LAB-298).
+        cold = [r for r in reg["cold"] if r.get("session_id")]
+        if cold:
+            out.append("")
+            out.append(section("COLD HERE", "resumable"))
+        for r in cold:
             idx += 1
             r["idx"] = idx
             name, harness = f"{r['name']:<24}", f"{r.get('harness') or r.get('kind'):<14}"
@@ -793,8 +829,8 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         argv += [h["tools_allow_flag"], allow]
     if deny and h.get("tools_deny_flag"):
         argv += [h["tools_deny_flag"], deny]
-    if seat and h.get("seat_flag"):
-        argv += [h["seat_flag"], str(seat)]  # claude takes -file; pi's --append-system-prompt accepts a path
+    if seat and prompt_flag(h):
+        argv += [prompt_flag(h), str(seat)]  # claude takes -file; pi's --append-system-prompt accepts a path
     argv += claim_argv(h, sitting, agents_dir=agents_dir)
     if resume_id:
         spec = list(h.get("resume") or [])
@@ -1289,6 +1325,7 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
         "workspace_id": pane.get("workspace_id"), "created": now(), "argv": argv,
     })
     save_roster(rows)
+    report_identity(pid, name, h["kind"], model)   # one publish per raise (LAB-297)
     if focus and pane.get("tab_id"):
         try:
             herdr("tab", "focus", pane["tab_id"])
@@ -1299,6 +1336,55 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
 
 def focus_agent(pane_id: str) -> None:
     herdr("agent", "focus", pane_id)
+
+
+# herdr sidebar tokens (event-driven; never a loop) — LAB-297.
+# Identity tokens for sittings cowbell knows, published once per event — a raise,
+# an adopt, or a state change seen during a picker refresh — with --source cowbell.
+# No [[startup]], no interval thread; bt-reporter (the clocks) stays a separate,
+# disabled tool. Sittings cowbell does not know stay unbadged until adopt.
+# Glyphs are the sidebar's table (agent-deck's, by Charles's eye in Menlo 2026-09-12).
+
+COWBELL_SOURCE = "cowbell"
+TOKEN_TTL_MS = "86400000"
+
+
+def glyph_for(kind: str, model: str = "") -> str:
+    m = (model or "").lower()
+    if kind == "claude":   # heavier glyph = bigger model (✳ sonnet/haiku, ✼ opus/fable/unknown)
+        return "✳" if ("haiku" in m or "sonnet" in m) else "✼"
+    return {"grok": "ϟ", "pi": "◇", "gemini": "✦", "codex": "◈"}.get(kind, "·")
+
+
+def report_identity(pane_id: str, name: str, kind: str, model: str = "") -> bool:
+    """One event, one publish: the sidebar's $line1 (glyph + sitting) and the display agent."""
+    if not pane_id or str(pane_id).startswith("pid:"):
+        return False  # a process on another terminal has no herdr pane to badge
+    g = glyph_for(kind, model)
+    try:
+        herdr("pane", "report-metadata", pane_id, "--source", COWBELL_SOURCE,
+              "--ttl-ms", TOKEN_TTL_MS, "--display-agent", g, "--token", f"line1={g} {name}")
+    except HerdrError:
+        return False
+    return True
+
+
+def identity_events(seen: dict, live_rows: list[dict]) -> list[dict]:
+    """Rostered herdr rows whose (sitting, harness, state) changed since the last
+    refresh — each is one publish. Updates `seen` in place; no event, no publish."""
+    events = []
+    for r in live_rows:
+        pane_id = str(r.get("pane_id") or "")
+        if not r.get("on_roster") or pane_id.startswith("pid:") or not pane_id:
+            continue  # sittings cowbell does not know stay unbadged until adopt
+        key = (r.get("name"), r.get("kind"), r.get("status"))
+        if seen.get(pane_id) == key:
+            continue
+        seen[pane_id] = key
+        events.append(r)
+    for pane_id in [p for p in seen if p not in {str(r.get("pane_id") or "") for r in live_rows}]:
+        seen.pop(pane_id, None)
+    return events
 
 
 class HerdrLive(LiveSource):
@@ -1341,13 +1427,15 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
         if not pl:
             raise SystemExit(f"cowbell: no place {place_name!r} in {catalog_path()} (have: {', '.join(places(cat)) or 'none'})")
         root = pl["cwd"]
-    root, place, _ = resolve_root(cat, root or ctx.cwd)
+    root, place, remapped = resolve_root(cat, root or ctx.cwd)
     cat = scoped_catalog(cat, place)
     rows = load_roster()
     ctx.live.refresh_sessions(rows)
     agents, panes = ctx.live.agents(), ctx.live.panes()
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
                          tab_label=tab_labels(ctx.live.snapshot()))
+    if place:
+        reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
     if as_json:
         print(json.dumps(registry_json(reg, place), indent=2))
         return reg
@@ -1445,6 +1533,9 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None 
     }
     rows.append(row)
     save_roster(rows)
+    apane = str(a.get("pane_id") or "")
+    if apane and not apane.startswith("pid:"):
+        report_identity(apane, nm, kind)   # one publish per adopt (LAB-297)
     print(f"adopted {nm}  {kind}  {tilde(cwd)}")
     return row
 
@@ -1506,7 +1597,7 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
     if lane and lane not in LANES:
         raise SystemExit(f"cowbell: lane must be one of {', '.join(LANES)}")
     model = model or (h["models"][0] if h["models"] else "")
-    seat = None if (no_seat or not h.get("seat_flag")) else seat_file(root)
+    seat = None if (no_seat or not prompt_flag(h)) else seat_file(root)
     gate(h, root, interactive=False, assume_yes=assume_yes)
     base = slug(name or h["id"])
     nm = unique_name(base, live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()})
@@ -1913,7 +2004,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
         if j is None:
             return False
         lane = LANES[j]
-    seat = seat_file(root) if h.get("seat_flag") else None
+    seat = seat_file(root) if prompt_flag(h) else None
     if v["verdict"] == "overprivilege":
         if ask(f"  {paint('!', RED, bold=True)} {h['id']} is over-privileged for {trust_subject(root)} work "
                f"({v['flag']}). start anyway? [y/N] ").lower() != "y":
@@ -1953,7 +2044,7 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
                f"({v['flag']}). start anyway? [y/N] ").lower() != "y":
             return False
     model = h["models"][0] if h["models"] else ""
-    seat = seat_file(root) if h.get("seat_flag") else None
+    seat = seat_file(root) if prompt_flag(h) else None
     pane = launch(cat, h, name, root, ctx, model, lane, "", "", seat)
     print(f"  started {name} in {pane['pane_id']}")
     return True
@@ -1981,7 +2072,7 @@ def remember_live(reg: dict, rows: list[dict]) -> int:
         rows.append({"name": name, "cwd": r["cwd"], "harness": r["harness"], "kind": r["kind"], "model": "",
                      "lane": "", "session_id": r["session_id"], "pane_id": r["pane_id"],
                      "workspace_id": r.get("workspace_id"), "label": r["name"], "created": now(),
-                     "last_seen": now()[:10], "source": "seen"})
+                     "last_seen": now()[:10], "place": r.get("place", ""), "source": "seen"})
         r["on_roster"] = True
         taken.add(name)
         added += 1
@@ -1999,6 +2090,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
     sel_key, sel_at, flash, expanded = "", 0, "", set()
     verdicts: dict[tuple[str, str], dict] = {}
     git_tops: dict[str, str | None] = {}
+    ident_seen: dict[str, tuple] = {}   # pane_id -> (name, kind, status) last published
 
     def matcher_for(r):
         def m(tool):
@@ -2026,6 +2118,10 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)
+            # LAB-297: publish sidebar identity once per event (a state change seen
+            # here, or a name/harness change after an adopt) — never per refresh.
+            for r in identity_events(ident_seen, reg["live"]):
+                report_identity(r["pane_id"], r["name"], r.get("kind") or "", r.get("model") or "")
             ws_labels = {w.get("workspace_id"): w.get("label") or "" for w in snap.get("workspaces") or []}
             choices = picker_choices(reg, rows, ctx.workspace_id, ws_labels, expanded)
             width = min(shutil.get_terminal_size((84, 24)).columns, 100)

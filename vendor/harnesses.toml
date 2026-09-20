@@ -8,12 +8,30 @@
 #
 # Each [[harness]] is one way of starting an agent: the executable (a herdr agent
 # kind, or a `command` wrapper), its models, and how it resumes a session.
-# Optional: `trust_tool` names it to agent-deck-trust, if you use that; without
-# the tool, cowbell shows no trust verdicts at all.
+# Optional: `trust_tool` is the name this harness answers to when a trust checker
+# is asked about it (see [defaults] trust_command); without such a checker on PATH,
+# cowbell shows no trust verdicts at all.
+#
+# Resuming outside herdr: a harness is resume-capable in a plain terminal only
+# when cowbell can choose its session id (`session_id_flag`), start with that id,
+# and replay it later. claude is the one seeded harness that is resume-capable
+# outside herdr; every other seeded harness is honestly absent from Resume when
+# raised outside herdr — its CLI picks its own session id, which cowbell cannot
+# set or replay. (Raised under herdr, session ids are observed and replay works
+# for any harness that has a `resume` spec.) `cowbell list` still shows every
+# row; Resume just does not offer what it cannot resume.
 
 schema = 1           # file format; a newer cowbell may raise it, an older one will not write it
 
 [defaults]
+# Two hooks onto tools cowbell does not own. Both are optional.
+# trust_command  a program asked `subject <path>`, `match <tool> <path>` and
+#                `badge <tool>`; exit 4 refuses, 3 warns. Not on PATH: no verdicts.
+# seat_file      a briefing file looked for by walking up from the directory and
+#                handed to a harness through its system_prompt_flag.
+trust_command = "harness-trust"
+seat_file = "SEAT.md"
+
 lane = "yellow"      # permissions preset used by Enter (quick start); `n` lets you choose
 ask_name = false     # true: Enter asks for a tab name before starting
 
@@ -51,7 +69,7 @@ model_flag = ["--model"]
 resume = ["--resume"]
 tools_allow_flag = "--allowedTools"
 tools_deny_flag = "--disallowedTools"
-seat_flag = "--append-system-prompt-file"   # used only when a SEAT.md is found at or above the directory
+system_prompt_flag = "--append-system-prompt-file"   # used only when a seat_file is found at or above the directory
 session_id_flag = "--session-id"   # outside herdr: cowbell picks the id so it can resume later
 name_flag = "--name"               # outside herdr: the sitting name as the session display name
 
