@@ -33,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -456,6 +457,196 @@ def tab_labels(snap: dict) -> dict[str, str]:
     return {t["tab_id"]: (t.get("label") or "") for t in snap.get("tabs") or [] if t.get("tab_id")}
 
 
+# --- session history (read-only discovery from each harness's own store) -------
+# cowbell's roster only knows what cowbell started or `adopt` was told about. The
+# harnesses keep their own per-directory stores; these providers read the metadata
+# needed for a Resume row (id, times, title) and nothing else from a transcript.
+# Off unless [defaults] session_history = "on" — a session store is private.
+
+def history_mode(cat: dict) -> str:
+    """off (default) · on (sittings) · all (including agents dispatched by a sitting)."""
+    v = str(cat.get("defaults", {}).get("session_history", "off")).strip().lower()
+    return {"true": "on", "yes": "on", "on": "on", "all": "all"}.get(v, "off")
+
+
+def history_on(cat: dict) -> bool:
+    return history_mode(cat) != "off"
+
+
+# A session whose opening line casts a role was dispatched by another sitting, not
+# chosen by a person. Honest history, but noise in a list you pick from.
+DISPATCHED = re.compile(r"^(you are|act as|role:)\b", re.I)
+
+
+def history_cache() -> dict:
+    try:
+        return json.loads((state_dir() / "history-cache.json").read_text())
+    except Exception:
+        return {}
+
+
+def write_history_cache(cache: dict) -> None:
+    try:
+        p = state_dir() / "history-cache.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(cache)[:4_000_000])
+    except OSError:
+        pass  # a cache that cannot be written is a slow cowbell, not a broken one
+
+
+def cache_key(f: Path) -> str:
+    try:
+        st = f.stat()
+    except OSError:
+        return ""
+    return f"{f}:{int(st.st_mtime)}:{st.st_size}"
+
+
+def message_text(v) -> str:
+    """The human text of a harness message: str, {content|text}, or a list of blocks."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        return message_text(v.get("content", v.get("text", "")))
+    if isinstance(v, list):
+        return " ".join(t for t in (message_text(x) for x in v) if t)
+    return ""
+
+
+# First user "messages" are often the harness talking to itself: a git-status
+# preamble, a rules digest, a caveat about local commands. Not what the sitting was about.
+INJECTED = re.compile(r"^(caveat:|this is the git status|the rules section|codebase and user instructions"
+                      r"|analysis:|<)", re.I)
+
+
+def session_title(v, limit: int = 60) -> str:
+    """A title from a user message, with the harness's injected blocks dropped."""
+    raw = message_text(v)
+    m = re.search(r"<user_query>\s*(.+?)\s*</user_query>", raw, re.S)
+    if m:
+        raw = m.group(1)
+    for tag in ("system-reminder", "user_info", "command-name", "command-message", "local-command-stdout"):
+        raw = re.sub(rf"<{tag}>.*?</{tag}>", " ", raw, flags=re.S)
+    raw = re.sub(r"<[^>]{1,40}>", " ", raw)
+    raw = " ".join(raw.split())
+    return raw[:limit].strip()
+
+
+def claude_store(root: str, home: Path | None = None) -> Path:
+    """Claude Code keys a project dir by the cwd with / and . flattened to -."""
+    base = (home or Path.home()) / ".claude" / "projects"
+    return base / re.sub(r"[/.]", "-", os.path.realpath(root))
+
+
+def claude_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict]:
+    out = []
+    store = claude_store(root, home)
+    if not store.is_dir():
+        return out
+    for f in sorted(store.glob("*.jsonl")):
+        key = cache_key(f)
+        hit = cache.get(key)
+        if hit is None:
+            hit = {"session_id": f.stem, "title": "", "started": "", "last": ""}
+            try:
+                with open(f, "r", errors="replace") as fh:
+                    for i, line in enumerate(fh):
+                        if i > 400:
+                            break
+                        try:
+                            d = json.loads(line)
+                        except ValueError:
+                            continue
+                        ts = d.get("timestamp") or ""
+                        if ts:
+                            hit["started"] = hit["started"] or ts
+                            hit["last"] = max(hit["last"], ts)
+                        if d.get("type") == "custom-title" and d.get("customTitle"):
+                            hit["title"] = str(d["customTitle"])[:60]
+                        elif not hit["title"] and d.get("type") == "user":
+                            t = session_title(d.get("message"))
+                            hit["title"] = "" if INJECTED.match(t) else t
+            except OSError:
+                continue
+            cache[key] = hit
+        out.append({**hit, "harness": "claude", "kind": "claude"})
+    return out
+
+
+def grok_store(root: str, home: Path | None = None) -> Path:
+    """Grok keys a session dir by the percent-encoded cwd."""
+    base = (home or Path.home()) / ".grok" / "sessions"
+    return base / urllib.parse.quote(os.path.realpath(root), safe="")
+
+
+def grok_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict]:
+    out = []
+    store = grok_store(root, home)
+    if not store.is_dir():
+        return out
+    for d in sorted(store.iterdir()):
+        chat = d / "chat_history.jsonl"
+        if not chat.is_file():
+            continue
+        key = cache_key(chat)
+        hit = cache.get(key)
+        if hit is None:
+            hit = {"session_id": d.name, "title": "", "started": "", "last": ""}
+            try:
+                st = chat.stat()
+                hit["last"] = _dt.datetime.fromtimestamp(st.st_mtime, _dt.timezone.utc).isoformat()
+                hit["started"] = _dt.datetime.fromtimestamp(getattr(st, "st_birthtime", st.st_mtime),
+                                                            _dt.timezone.utc).isoformat()
+                with open(chat, "r", errors="replace") as fh:
+                    for i, line in enumerate(fh):
+                        if i > 40:
+                            break
+                        try:
+                            r = json.loads(line)
+                        except ValueError:
+                            continue
+                        if r.get("type") == "user":
+                            t = session_title(r.get("content"))
+                            if t and INJECTED.match(t):
+                                continue
+                            if t:
+                                hit["title"] = t
+                                break
+            except OSError:
+                continue
+            cache[key] = hit
+        out.append({**hit, "harness": "grok", "kind": "grok"})
+    return out
+
+
+HISTORY_PROVIDERS = {"claude": claude_sessions, "grok": grok_sessions}
+
+
+def discover_sessions(root: str, cat: dict, home: Path | None = None) -> list[dict]:
+    """Sessions this directory has seen, from the harnesses' own stores. [] when off."""
+    if not history_on(cat):
+        return []
+    ids = {h["id"] for h in cat.get("harness", [])}
+    cache, rows = history_cache(), []
+    for hid, provider in HISTORY_PROVIDERS.items():
+        if ids and hid not in ids:
+            continue  # a place's allow_harness governs discovery too
+        try:
+            rows += provider(root, cache, home)
+        except Exception:
+            continue  # one unreadable store never costs the others
+    write_history_cache(cache)
+    if history_mode(cat) != "all":
+        rows = [r for r in rows if not DISPATCHED.match(r.get("title") or "")]
+    for r in rows:
+        title = r.get("title") or ""
+        r.setdefault("name", (title[:21] + "…") if len(title) > 22 else (title or r["session_id"][:8]))
+        r["cwd"], r["source"] = os.path.realpath(root), "history"
+        r["last_seen"] = (r.get("last") or "")[:10]
+    rows.sort(key=lambda r: r.get("last") or "", reverse=True)
+    return rows
+
+
 # --- trust (delegated to EXT["trust_command"]; never re-encoded here) ----------------
 
 def trust_available() -> bool:
@@ -506,7 +697,8 @@ def verdict_mark(v: dict) -> str:
 # --- registry ------------------------------------------------------------------
 
 def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], roster: list[dict],
-                   matcher=None, subject: str = "", tab_label: dict | None = None) -> dict:
+                   matcher=None, subject: str = "", tab_label: dict | None = None,
+                   history: list[dict] | None = None) -> dict:
     """Partition the herd for one root: live here, cold here, absent here."""
     matcher = matcher or (lambda tool: trust_match(tool, root))
     labels = tab_label or {}
@@ -553,6 +745,14 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
             continue  # place catalog: do not offer resume of a harness the door does not admit
         pane_alive = r.get("pane_id") in pane_ids and r.get("pane_id") not in live_by_pane
         cold_rows.append({**r, "status": "unknown" if pane_alive else "cold", "pane_alive": pane_alive})
+
+    # sessions the harnesses recorded themselves; a roster row wins, it knows the pane
+    seen_ids = {x.get("session_id") for x in live_rows} | {x.get("session_id") for x in cold_rows}
+    for r in (history or []):
+        if r.get("session_id") in seen_ids or (allowed and r.get("harness") not in allowed):
+            continue
+        seen_ids.add(r.get("session_id"))
+        cold_rows.append({**r, "status": "cold", "pane_alive": False})
 
     present = {x["harness"] for x in live_rows} | {x.get("harness") for x in cold_rows}
     absent, startable = [], []
@@ -1433,7 +1633,7 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
     ctx.live.refresh_sessions(rows)
     agents, panes = ctx.live.agents(), ctx.live.panes()
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
-                         tab_label=tab_labels(ctx.live.snapshot()))
+                         tab_label=tab_labels(ctx.live.snapshot()), history=discover_sessions(root, cat))
     if place:
         reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
     if as_json:
@@ -1476,17 +1676,35 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None) -> None:
 
 
 def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None) -> dict:
-    """A live herdr pane or process-scan row to put on the roster."""
+    """A live herdr pane or process-scan row to put on the roster.
+
+    `herdr agent list` often has focused=False on every row. The focused pane
+    is snapshot.focused_pane_id (and panes[].focused).
+    """
     agents = ctx.live.agents()
+    by_pane = {a.get("pane_id"): a for a in agents if a.get("pane_id")}
+
+    def from_pane(pid: str | None) -> dict | None:
+        return by_pane.get(pid) if pid else None
+
     if pane_id:
-        hits = [a for a in agents if a.get("pane_id") == pane_id]
-        if len(hits) != 1:
+        hit = from_pane(pane_id)
+        if not hit:
             raise SystemExit(f"cowbell: no live agent in pane {pane_id}")
-        return hits[0]
-    if ctx.pane_id:
-        hits = [a for a in agents if a.get("pane_id") == ctx.pane_id]
-        if hits:
-            return hits[0]
+        return hit
+    # Typed inside an agent pane: adopt that sitting.
+    hit = from_pane(ctx.pane_id)
+    if hit:
+        return hit
+    snap = ctx.live.snapshot() or {}
+    hit = from_pane(snap.get("focused_pane_id"))
+    if hit:
+        return hit
+    for p in snap.get("panes") or []:
+        if p.get("focused"):
+            hit = from_pane(p.get("pane_id"))
+            if hit:
+                return hit
     focused = [a for a in agents if a.get("focused")]
     if focused:
         return focused[0]
@@ -1495,7 +1713,12 @@ def live_agent_to_adopt(ctx: Ctx, pane_id: str | None = None) -> dict:
         return here[0]
     if len(agents) == 1:
         return agents[0]
-    raise SystemExit("cowbell: no focused pane to adopt (pass --pane ID)")
+    show = here[:12] or agents[:12]
+    lines = ["cowbell: no focused agent pane to adopt. Live here:"]
+    for a in show:
+        lines.append(f"  {a.get('pane_id')}  {a.get('agent') or '?'}  {tilde(a.get('cwd') or '')}")
+    lines.append("pass --pane ID")
+    raise SystemExit("\n".join(lines))
 
 
 def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None = None) -> dict:
@@ -2114,7 +2337,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if top and os.path.realpath(top) != os.path.realpath(root):
                 wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
             reg = build_registry(cat, root, agents, panes, rows, matcher=matcher_for(root),
-                                 tab_label=tab_labels(snap))
+                                 tab_label=tab_labels(snap), history=discover_sessions(root, cat))
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)
@@ -2253,7 +2476,7 @@ def main(argv: list[str]) -> int:
     if cmd == "adopt" and (opts.get("help") or opts.get("h") or (pos and pos[0] in ("-h", "--help"))):
         print("cowbell adopt [name] [--pane ID]")
         print("  Bind a live sitting cowbell did not start onto the roster.")
-        print("  Default: the focused herdr pane, or the only live agent here.")
+        print("  Default: this pane if it is an agent, else herdr's focused agent pane.")
         return 0
     ctx = choose_host(server_up())
     cat = load_catalog()
