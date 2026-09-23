@@ -68,9 +68,9 @@ herdr refuses to install over a linked plugin.
 The popup is mouse-first: click or arrow to a row, Enter (or the ⏎ button) to
 open, Esc to close. Digits jump to a row, every hint in the bottom bar is
 clickable, and the list refreshes every two seconds without losing your place.
-`! vendor · writes` (dim) marks a vendor-hosted agent with write tools in a
-folder classed internal. It is advisory and never blocks; only `⊘` does. It
-appears only if you have a trust checker configured.
+A dim `! more reach than needed` marks an agent your trust checker calls
+over-privileged for this directory. It is advisory and never stops a launch;
+agents the checker blocks are left off. Neither appears without a checker.
 
 ## Which agents it can start
 
