@@ -21,7 +21,7 @@ workspace. The same picker runs outside herdr as the `cowbell` command.
   New
     4  claude                 Claude Code
     5  oll-mid                kimi k2.7 cloud — default coding
-    6  grok                   Grok CLI                           ! asks first
+    6  grok                   Grok CLI                           ! more reach than needed
        + 9 more
 
   ⏎ open   n new with options   g widen   esc close

@@ -29,6 +29,13 @@ schema = 1           # file format; a newer cowbell may raise it, an older one w
 #                `badge <tool>`; exit 4 refuses, 3 warns. Not on PATH: no verdicts.
 # seat_file      a briefing file looked for by walking up from the directory and
 #                handed to a harness through its system_prompt_flag.
+# session_history  "on" lets cowbell read the harnesses' own session stores
+#                  (~/.claude/projects, ~/.grok/sessions) so Resume knows every
+#                  session this directory has seen, not only the ones cowbell
+#                  started. Metadata only — id, times, title. "all" also lists
+#                  agents a sitting dispatched (role prompts). Default "off".
+session_history = "off"        # off · on · all
+
 trust_command = "harness-trust"
 seat_file = "SEAT.md"
 

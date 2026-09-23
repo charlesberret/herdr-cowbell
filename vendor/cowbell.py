@@ -42,7 +42,7 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 PLUGIN_ID = "herdr-cowbell"  # only to find config and state that 0.1–0.3 kept in herdr's plugin dirs
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 LANES = ("green", "yellow", "red")
@@ -97,7 +97,7 @@ def status_cell(status: str, width: int = 8) -> str:
 
 def verdict_cell(v: dict) -> str:
     mark = verdict_mark(v)
-    return paint(mark, RED if mark == "!" else FAINT if mark == "ok" else MUTED, bold=mark == "!")
+    return paint(mark, RED if mark == "⊘" else FAINT if mark in ("ok", "!") else MUTED, bold=mark == "⊘")
 
 
 def header(reg: dict, git_top: str | None, wider: int | None, widen_hint: bool = True) -> list[str]:
@@ -665,13 +665,20 @@ def parse_match(text: str, code: int) -> dict:
     for line in text.splitlines():
         m = re.match(r"^\s*verdict:\s+(\S+)\s*(.*)$", line)
         if m:
-            verdict, flag = m.group(1), m.group(2).strip()
+            verdict = m.group(1)
+            flag = re.sub(r"\s*\[.*\]\s*$", "", m.group(2).strip()).strip("()")
         m = re.match(r"^\s*flag:\s+(.*)$", line)
         if m and m.group(1).strip() not in ("(none)", ""):
             flag = m.group(1).strip()
     if not verdict:
         verdict = {0: "ok", 3: "overprivilege", 4: "blocked"}.get(code, "unknown")
     return {"verdict": verdict, "flag": flag, "exit": code}
+
+
+def trust_note(hid: str, v: dict, root: str) -> str:
+    """Over-privilege is advisory (T4: visible, never a gate). Say what the checker saw."""
+    why = f" ({v['flag']})" if v.get("flag") else ""
+    return f"{hid} has more reach than {tilde(root)} needs{why}"
 
 
 def trust_match(tool: str, root: str) -> dict:
@@ -854,7 +861,7 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
         out.append(paint("  nothing raised here yet", FAINT))
     if reg["absent"]:
         out.append("")
-        out.append(section("ABSENT HERE", "⌂ local  ↑ vendor · ok  ! overprivilege  ⊘ blocked  ? unknown"))
+        out.append(section("ABSENT HERE", "⌂ local  ↑ vendor · ok  ! more reach  ⊘ blocked  ? unknown"))
         bits = []  # (plain width, painted)
         for a in reg["absent"]:
             mark = verdict_mark(a["trust"])
@@ -953,7 +960,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
     title_w = min(34, max((len(pool[h].get("title") or "") for h in shown), default=0))
     for hid in ranked:
         a = pool[hid]
-        warn = f"   {paint('!', RED, bold=True)} {paint('asks first', FAINT)}" \
+        warn = f"   {paint('! more reach than needed', FAINT)}" \
             if a.get("trust", {}).get("verdict") == "overprivilege" else ""
         start.append({"action": "raise", "target": a, "key": f"raise:{hid}",
                       "line": f"{paint(f'{hid:<22}', SECONDARY)} "
@@ -1110,7 +1117,10 @@ def process_cwds(pids: list[int]) -> dict[int, str]:
             except OSError:
                 pass
         return out
-    proc = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, pids))],
+    lsof = shutil.which("lsof") or next((x for x in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.access(x, os.X_OK)), None)
+    if not lsof:  # a spare PATH (launchd, a plugin host) often lacks /usr/sbin; no lsof means no cwds, not a crash
+        return {}
+    proc = subprocess.run([lsof, "-a", "-d", "cwd", "-Fpn", "-p", ",".join(map(str, pids))],
                           capture_output=True, text=True)
     out, pid = {}, None
     for line in proc.stdout.splitlines():
@@ -1159,10 +1169,45 @@ def here_command(cat: dict, h: dict, name: str, model="", lane="", allow="", den
 
 
 def _here_exe(h: dict, cmd: list[str]) -> str:
-    exe = cmd[0] if is_wrapper(h) else shutil.which(cmd[0])
+    exe = cmd[0] if os.path.isabs(cmd[0]) else shutil.which(cmd[0])
     if not exe:
         raise SystemExit(f"cowbell: {cmd[0]} is not on PATH")
     return exe
+
+
+def unix_confine(cat: dict, root: str, cmd: list[str]) -> list[str]:
+    """Prefix agent-run + nono when the place names a unix_user. Identity first, then Landlock/Seatbelt."""
+    import pwd
+    pl = place_for(cat, root)
+    defaults = cat.get("defaults") or {}
+    uid = ((pl or {}).get("unix_user") or defaults.get("unix_user") or "").strip()
+    require = (pl or {}).get("require_uid")
+    if require is None:
+        require = bool(defaults.get("require_uid"))
+    if require and not uid:
+        raise SystemExit(
+            f"cowbell: refused — no unix_user for {tilde(root)}; "
+            "set [places.*] unix_user or use agent-run <uid> -- …"
+        )
+    if not uid:
+        return cmd
+    try:
+        pw = pwd.getpwnam(uid)
+    except KeyError:
+        raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host (agent-uids/provision.sh)")
+    helper = shutil.which("agent-run") or "/usr/local/bin/agent-run"
+    if not os.path.isfile(helper):
+        raise SystemExit("cowbell: agent-run is not installed")
+    profile = os.path.expanduser((pl or {}).get("nono_profile") or defaults.get("nono_profile") or "")
+    inner = list(cmd)
+    if profile:
+        nono = shutil.which("nono")
+        if not nono:
+            raise SystemExit("cowbell: nono is not on PATH (needed for this place)")
+        inner = [nono, "run", "--silent", "--profile", profile, "--allow-cwd", "--"] + inner
+    if os.geteuid() == pw.pw_uid:
+        return inner
+    return [helper, uid, "--"] + inner
 
 
 def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: str, deny: str,
@@ -1178,6 +1223,7 @@ def exec_here(cat: dict, h: dict, name: str, root: str, ctx: "Ctx", model="", la
               seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None, focus: bool = True):
     """Hand this terminal to the agent. Does not return."""
     cmd, session = here_command(cat, h, name, model, lane, allow, deny, seat, resume_id, extra)
+    cmd = unix_confine(cat, root, cmd)
     exe = _here_exe(h, cmd)
     _record_here(h, name, root, model, lane, allow, deny, seat, session, cmd, None)
     sys.stdout.write("\x1b[H\x1b[2J" if sys.stdout.isatty() else "")
@@ -1497,6 +1543,8 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
                   focus: bool = True) -> dict:
     argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
     place = place_for(cat, root)
+    base = ([h["command"], *argv] if is_wrapper(h) else [h["kind"], *argv])
+    confined = unix_confine(cat, root, base)
     if place and place.get("workspace_label"):  # a place's sittings open in its own pen, not the caller's
         pane = create_tab(workspace_by_label(place["workspace_label"]), root, name, place["workspace_label"])
     else:
@@ -1504,9 +1552,9 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     pid = pane["pane_id"]
     launched_session = ""
     try:
-        if is_wrapper(h):
+        if confined != base or is_wrapper(h):
             wait_shell(pid)
-            herdr("pane", "run", pid, shell_join([h["command"], *argv]), expect_json=False)
+            herdr("pane", "run", pid, shell_join(confined), expect_json=False)
         else:
             res = start_native(name, h["kind"], pid, argv)
             launched_session = ((res.get("agent") or {}).get("agent_session") or {}).get("value") or ""
@@ -1784,12 +1832,7 @@ def gate(cat_h: dict, root: str, interactive: bool, assume_yes: bool) -> dict:
     if v["verdict"] == "blocked":
         raise SystemExit(f"cowbell: refused — {cat_h['id']} on {tilde(root)}: blocked {v['flag']} (T4 under-clearance)")
     if v["verdict"] == "overprivilege":
-        msg = f"{cat_h['id']} on {tilde(root)}: overprivilege {v['flag']} (surface exceeds subject; visible, not silent)"
-        if interactive and not assume_yes:
-            if input(f"  ! {msg}\n  proceed? [y/N] ").strip().lower() != "y":
-                raise SystemExit("cowbell: not raised")
-        else:
-            print(f"cowbell: ! {msg}", file=sys.stderr)
+        print(f"cowbell: ! {trust_note(cat_h['id'], v, root)}", file=sys.stderr)
     return v
 
 
@@ -2186,7 +2229,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
     hs = [h for h in cat.get("harness", [])]
     with ThreadPoolExecutor(max_workers=8) as pool:
         verdicts = dict(zip([h["id"] for h in hs], pool.map(lambda h: trust_match(h["trust_tool"], root), hs)))
-    note = {"blocked": paint("  ⊘ blocked here", RED), "overprivilege": paint("  ! over-privileged here", RED)}
+    note = {"blocked": paint("  ⊘ blocked here", RED), "overprivilege": paint("  ! more reach than needed", FAINT)}
     rows = []
     for h in hs:
         ok = installed(h)
@@ -2229,9 +2272,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
         lane = LANES[j]
     seat = seat_file(root) if prompt_flag(h) else None
     if v["verdict"] == "overprivilege":
-        if ask(f"  {paint('!', RED, bold=True)} {h['id']} is over-privileged for {trust_subject(root)} work "
-               f"({v['flag']}). start anyway? [y/N] ").lower() != "y":
-            return False
+        print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
     argv = build_argv(cat, h, model, lane, "", "", seat, sitting=name)
     shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
     if ctx.mode != "here":
@@ -2263,9 +2304,7 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
             return False
         name = unique_name(slug(raw), taken)
     if v["verdict"] == "overprivilege":
-        if ask(f"  {paint('!', RED, bold=True)} {h['id']} is over-privileged for {trust_subject(root)} work "
-               f"({v['flag']}). start anyway? [y/N] ").lower() != "y":
-            return False
+        print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
     model = h["models"][0] if h["models"] else ""
     seat = seat_file(root) if prompt_flag(h) else None
     pane = launch(cat, h, name, root, ctx, model, lane, "", "", seat)
