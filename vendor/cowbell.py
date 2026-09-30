@@ -1787,13 +1787,14 @@ def glyph_for(kind: str, model: str = "") -> str:
 
 
 def report_identity(pane_id: str, name: str, kind: str, model: str = "") -> bool:
-    """One event, one publish: the sidebar's $line1 (glyph + sitting) and the display agent."""
+    """One event, one publish: $glyph (badge), $line1 (glyph + sitting), display_agent."""
     if not pane_id or str(pane_id).startswith("pid:"):
         return False  # a process on another terminal has no herdr pane to badge
     g = glyph_for(kind, model)
     try:
         herdr("pane", "report-metadata", pane_id, "--source", COWBELL_SOURCE,
-              "--ttl-ms", TOKEN_TTL_MS, "--display-agent", g, "--token", f"line1={g} {name}")
+              "--ttl-ms", TOKEN_TTL_MS, "--display-agent", g,
+              "--token", f"glyph={g}", "--token", f"line1={g} {name}")
     except HerdrError:
         return False
     return True
