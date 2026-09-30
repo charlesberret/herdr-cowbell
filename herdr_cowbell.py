@@ -5,7 +5,7 @@
   bin/cowbell adopt [name]         put the focused agent pane on the roster (core)
   bin/cowbell stop <name>          ctrl-c a running sitting; the roster keeps it
   bin/cowbell import-seats         pull herdr-seats' seats.json into the roster
-  bin/cowbell keys install|uninstall   bind / restore prefix+c
+  bin/cowbell keys install|uninstall|ensure   bind / restore prefix+c; ensure reasserts a prior claim
   bin/cowbell <anything else>      the cowbell core (picker, status, new, enter, ...)
 
 Which core runs: a `cowbell` on PATH whose --version is at least the vendored one
@@ -30,6 +30,12 @@ PLUGIN_ID = "herdr-cowbell"
 PLUGIN_COMMANDS = {"open", "adopt", "stop", "import-seats", "keys"}
 HERDR_CONFIG = Path("~/.config/herdr/config.toml").expanduser()
 SEATS_JSON = Path("~/.config/herdr/plugins/config/herdr-seats/seats.json").expanduser()
+CLAIM_FILE = "prefix-c.claimed"
+CLAIM_BODY = (
+    "# herdr-cowbell: prefix+c is claimed. `cowbell keys uninstall` releases it.\n"
+    "# A herdr upgrade that rewrites config.toml is reasserted on the next server start.\n"
+)
+KEYS_ACTIONS = ("install", "uninstall", "ensure")
 CTX_KEYS = (
     "workspace_id", "workspace_cwd", "tab_id", "tab_label",
     "focused_pane_id", "focused_pane_cwd", "focused_pane_agent",
@@ -258,11 +264,66 @@ def keys_uninstall_text(text: str) -> str:
     return "\n".join(out) + "\n"
 
 
-def cmd_keys(action: str, path: Path = HERDR_CONFIG) -> None:
+def cowbell_config_dir() -> Path:
+    """Same lookup as the vendored core, without importing it (and without mkdir)."""
+    base = os.environ.get("COWBELL_CONFIG_DIR") or \
+        Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "cowbell"
+    return Path(base).expanduser()
+
+
+def keys_claim_path() -> Path:
+    return cowbell_config_dir() / CLAIM_FILE
+
+
+def keys_claimed(path: Path | None = None) -> bool:
+    return (path or keys_claim_path()).is_file()
+
+
+def write_keys_claim(claimed: bool, path: Path | None = None) -> None:
+    p = path or keys_claim_path()
+    if claimed:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if not p.is_file() or p.read_text(encoding="utf-8") != CLAIM_BODY:
+            p.write_text(CLAIM_BODY, encoding="utf-8")
+    elif p.is_file():
+        p.unlink()
+
+
+def _reload_config_after_ensure() -> None:
+    cb = core()
+    if not cb.server_up():
+        print("run: herdr server reload-config")
+        return
+    try:
+        cb.herdr("server", "reload-config", expect_json=False)
+    except cb.HerdrError as e:
+        print(f"cowbell: wrote the binding; reload-config failed ({e})", file=sys.stderr)
+        print("run: herdr server reload-config")
+
+
+def cmd_keys(action: str, path: Path = HERDR_CONFIG, *, claim: Path | None = None,
+             reload: bool | None = None) -> None:
+    """install/uninstall are opt-in. ensure is silent unless a prior install was clobbered.
+
+    `reload` defaults to on for ensure against the live herdr config, off otherwise
+    (tests pass a temp path; they must not bounce the running server).
+    """
+    if action not in KEYS_ACTIONS:
+        raise SystemExit(f"cowbell keys: unknown action {action!r} (install|uninstall|ensure)")
+    claim_path = claim if claim is not None else keys_claim_path()
+    if action == "ensure" and not keys_claimed(claim_path):
+        return
+    if action == "uninstall":
+        write_keys_claim(False, claim_path)
+        desired = "uninstall"
+    else:
+        write_keys_claim(True, claim_path)
+        desired = "install"
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    new = keys_install_text(text) if action == "install" else keys_uninstall_text(text)
+    new = keys_install_text(text) if desired == "install" else keys_uninstall_text(text)
     if new == text:
-        print(f"{path}: already {action}ed")
+        if action != "ensure":
+            print(f"{path}: already {action}ed")
         return
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = path.with_name(f"{path.name}.bak-{stamp}")
@@ -272,6 +333,12 @@ def cmd_keys(action: str, path: Path = HERDR_CONFIG) -> None:
     if path.exists():
         shutil.copy2(path, backup)
     core().write_atomic(path, new)
+    if action == "ensure":
+        print(f"reasserted prefix+c binding in {path} (backup: {backup.name})")
+        should_reload = reload if reload is not None else path.resolve() == HERDR_CONFIG.resolve()
+        if should_reload:
+            _reload_config_after_ensure()
+        return
     print(f"{action}ed prefix+c binding in {path} (backup: {backup.name})")
     print("run: herdr server reload-config")
 

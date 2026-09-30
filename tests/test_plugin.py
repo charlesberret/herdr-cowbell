@@ -36,10 +36,17 @@ def run_shim(*args, path: str, shim: Path = SHIM, env_extra=None):
 class Packaging(unittest.TestCase):
     def test_manifest_commands_go_through_the_shim(self):
         m = tomllib.loads((ROOT / "herdr-plugin.toml").read_text())
-        commands = [a["command"] for a in m["actions"]] + [p["command"] for p in m["panes"]]
+        commands = (
+            [a["command"] for a in m["actions"]]
+            + [p["command"] for p in m["panes"]]
+            + [s["command"] for s in m.get("startup", [])]
+        )
         self.assertTrue(commands)
         self.assertTrue(all(c[0] == "./bin/cowbell" for c in commands))
         self.assertEqual({c[1] for c in commands}, {"open", "adopt", "keys", "picker"})
+        self.assertEqual(m["startup"], [{"command": ["./bin/cowbell", "keys", "ensure"]}])
+        picker = next(p for p in m["panes"] if p["id"] == "picker")
+        self.assertEqual(picker["title"], "\u2800\u2800cowbell")
 
     def test_vendored_core_is_pinned_and_clean(self):
         text = (ROOT / "vendor" / "cowbell.py").read_text()
@@ -174,6 +181,73 @@ class Keys(unittest.TestCase):
         parsed = tomllib.loads(inst)
         self.assertEqual(parsed["keys"]["new_tab"], "")
         self.assertEqual(parsed["keys"]["command"][0]["key"], "prefix+c")
+
+    def test_live_like_keys_table_without_new_tab(self):
+        cfg = (
+            "[keys]\n"
+            "\n"
+            "[[keys.command]]\n"
+            'key = "prefix+shift+r"\n'
+            'type = "plugin_action"\n'
+            'command = "herdr-agent-quota.refresh"\n'
+        )
+        inst = hm.keys_install_text(cfg)
+        parsed = tomllib.loads(inst)
+        self.assertEqual(parsed["keys"]["new_tab"], "")
+        self.assertEqual(
+            [c["command"] for c in parsed["keys"]["command"]],
+            ["herdr-agent-quota.refresh", "herdr-cowbell.open"],
+        )
+
+    def test_ensure_without_claim_leaves_config_alone(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        cfg = base / "config.toml"
+        cfg.write_text("[keys]\n", encoding="utf-8")
+        claim = base / "prefix-c.claimed"
+        hm.cmd_keys("ensure", cfg, claim=claim)
+        self.assertEqual(cfg.read_text(encoding="utf-8"), "[keys]\n")
+        self.assertFalse(claim.exists())
+
+    def test_install_claims_and_ensure_reasserts_after_wipe(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        cfg = base / "config.toml"
+        cfg.write_text("[theme]\nname = \"tokyo-night\"\n\n[keys]\n", encoding="utf-8")
+        claim = base / "prefix-c.claimed"
+        hm.cmd_keys("install", cfg, claim=claim)
+        self.assertTrue(claim.is_file())
+        self.assertIn("herdr-cowbell.open", cfg.read_text(encoding="utf-8"))
+        # herdr upgrade rewrote config.toml and dropped [keys] entirely
+        cfg.write_text("[theme]\nname = \"tokyo-night\"\n", encoding="utf-8")
+        hm.cmd_keys("ensure", cfg, claim=claim)
+        text = cfg.read_text(encoding="utf-8")
+        self.assertIn("herdr-cowbell.open", text)
+        self.assertIn('new_tab = ""  # cowbell', text)
+        parsed = tomllib.loads(text)
+        self.assertEqual(parsed["keys"]["new_tab"], "")
+        self.assertEqual(parsed["keys"]["command"][0]["command"], "herdr-cowbell.open")
+
+    def test_uninstall_releases_the_claim(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        cfg = base / "config.toml"
+        cfg.write_text(CHARLES_CONFIG, encoding="utf-8")
+        claim = base / "prefix-c.claimed"
+        hm.cmd_keys("install", cfg, claim=claim)
+        hm.cmd_keys("uninstall", cfg, claim=claim)
+        self.assertFalse(claim.exists())
+        self.assertNotIn("herdr-cowbell.open", cfg.read_text(encoding="utf-8"))
+        hm.cmd_keys("ensure", cfg, claim=claim)
+        self.assertNotIn("herdr-cowbell.open", cfg.read_text(encoding="utf-8"))
+
+    def test_unknown_keys_action_errors(self):
+        with self.assertRaises(SystemExit) as ctx:
+            hm.cmd_keys("clobber")
+        self.assertIn("unknown action", str(ctx.exception))
 
 
 class OpenCtx(unittest.TestCase):

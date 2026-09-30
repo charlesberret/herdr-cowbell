@@ -34,9 +34,18 @@ title = "cowbell: restore the built-in new-tab binding"
 contexts = ["global"]
 command = ["./bin/cowbell", "keys", "uninstall"]
 
+# One-shot: if the user has claimed prefix+c, put the binding back when a herdr
+# upgrade rewrites config.toml. Does not steal the key until install-keys has run.
+# No panes, no report-metadata, no clocks (LAB-297).
+[[startup]]
+command = ["./bin/cowbell", "keys", "ensure"]
+
 [[panes]]
 id = "picker"
-title = "cowbell"
+# Herdr draws the popup title against the inner left border and trims ordinary
+# spaces. Two U+2800 pads (not whitespace) line "cowbell" up with the picker's
+# two-space indent, flush with the leftmost text inside.
+title = "\u2800\u2800cowbell"
 placement = "popup"
 width = "64%"
 height = "56%"
