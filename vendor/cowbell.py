@@ -2336,6 +2336,275 @@ def write_atomic(path: Path, text: str) -> None:
         raise
 
 
+# --- catalog writer (LAB-254) ------------------------------------------------
+# Splice [[harness]] blocks as text so comments and neighbouring tables stay.
+# Block = [[harness]] through the next [[…]] / […] / EOF. tomllib only reads.
+
+_BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+_ID_ASSIGN = re.compile(r'^[ \t]*id[ \t]*=[ \t]*("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')')
+
+
+def _table_header(line: str) -> str | None:
+    """Return a normalised header (`[[harness]]`, `[places.x]`) or None."""
+    s = line.split("\n", 1)[0].strip()
+    if not s.startswith("["):
+        return None
+    end = s.rfind("]")
+    if end < 0:
+        return None
+    tail = s[end + 1:].strip()
+    if tail and not tail.startswith("#"):
+        return None
+    s = s[:end + 1].strip()
+    if s.startswith("[[") and s.endswith("]]"):
+        return f"[[{s[2:-2].strip()}]]"
+    if s.startswith("[") and s.endswith("]"):
+        return f"[{s[1:-1].strip()}]"
+    return None
+
+
+def _toml_dump_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        raise TypeError("cowbell: cannot write a null TOML value")
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, str):
+        escaped = (value.replace("\\", "\\\\").replace('"', '\\"')
+                   .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t"))
+        return f'"{escaped}"'
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_dump_value(x) for x in value) + "]"
+    raise TypeError(f"cowbell: cannot write {type(value).__name__} as TOML")
+
+
+def _parse_value_and_suffix(rest: str) -> tuple[str, str]:
+    """Split `rest` (after `=`) into the value source and the trailing comment/newline."""
+    i, n = 0, len(rest)
+    while i < n and rest[i] in " \t":
+        i += 1
+    if i >= n:
+        return "", rest
+    start, ch = i, rest[i]
+    if ch in "\"'":
+        q = ch
+        i += 1
+        while i < n:
+            if rest[i] == "\\" and q == '"':
+                i += 2
+                continue
+            if rest[i] == q:
+                i += 1
+                break
+            i += 1
+    elif ch == "[":
+        depth, in_str, q = 0, False, ""
+        while i < n:
+            c = rest[i]
+            if in_str:
+                if c == "\\" and q == '"':
+                    i += 2
+                    continue
+                if c == q:
+                    in_str = False
+                i += 1
+                continue
+            if c in "\"'":
+                in_str, q = True, c
+                i += 1
+                continue
+            if c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                i += 1
+                if depth == 0:
+                    break
+                continue
+            i += 1
+    else:
+        while i < n and rest[i] not in " \t#\n\r":
+            i += 1
+    return rest[start:i], rest[i:]
+
+
+def _block_id(block: str) -> str:
+    for ln in block.splitlines():
+        if ln.lstrip().startswith("#"):
+            continue
+        m = _ID_ASSIGN.match(ln)
+        if m:
+            raw = m.group(1)
+            return bytes(raw, "utf-8").decode("unicode_escape").strip("\"'")
+    return ""
+
+
+def harness_blocks(text: str) -> list[dict]:
+    """Each `[[harness]]` span: id, start, end (end exclusive), text."""
+    lines = text.splitlines(keepends=True)
+    spans, i, pos, n = [], 0, 0, len(lines)
+    while i < n:
+        hdr = _table_header(lines[i])
+        if hdr == "[[harness]]":
+            start = pos
+            endpos = pos + len(lines[i])
+            j = i + 1
+            while j < n:
+                if _table_header(lines[j]) is not None:
+                    break
+                endpos += len(lines[j])
+                j += 1
+            block = text[start:endpos]
+            spans.append({"id": _block_id(block), "start": start, "end": endpos, "text": block})
+            pos, i = endpos, j
+            continue
+        pos += len(lines[i])
+        i += 1
+    return spans
+
+
+def _format_harness_block(h: dict) -> str:
+    if not h.get("id"):
+        raise SystemExit("cowbell: harness needs an id")
+    keys = ["id"] + [k for k in h if k != "id"]
+    lines = ["[[harness]]"]
+    for k in keys:
+        if not _BARE_KEY.match(k):
+            raise SystemExit(f"cowbell: invalid harness field {k!r}")
+        v = h[k]
+        if v is None:
+            continue
+        lines.append(f"{k} = {_toml_dump_value(v)}")
+    return "\n".join(lines) + "\n"
+
+
+def _file_schema(path: Path) -> int:
+    if tomllib is None:
+        raise SystemExit("cowbell: python >= 3.11 required (tomllib)")
+    with open(path, "rb") as fh:
+        data = tomllib.load(fh)
+    return data.get("schema", 1) if isinstance(data, dict) else 1
+
+
+def _backup_timestamped(path: Path) -> Path:
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = path.with_name(f"{path.name}.bak-{stamp}")
+    n = 2
+    while backup.exists():
+        backup = path.with_name(f"{path.name}.bak-{stamp}.{n}")
+        n += 1
+    shutil.copy2(path, backup)
+    return backup
+
+
+def _commit_catalog(path: Path, new_text: str) -> None:
+    path = Path(path)
+    if not path.is_file():
+        raise SystemExit(f"cowbell: no catalog at {path}")
+    check_writable(_file_schema(path), str(path))
+    old = path.read_text(encoding="utf-8")
+    if old == new_text:
+        return
+    _backup_timestamped(path)
+    write_atomic(path, new_text)
+
+
+def _catalog_text(path: Path | None) -> tuple[Path, str]:
+    p = Path(path) if path is not None else catalog_path()
+    if not p.is_file():
+        raise SystemExit(f"cowbell: no catalog at {p}")
+    return p, p.read_text(encoding="utf-8")
+
+
+def _find_block(spans: list[dict], hid: str) -> dict | None:
+    hits = [s for s in spans if s["id"] == hid]
+    return hits[0] if hits else None
+
+
+def _splice(text: str, start: int, end: int, block: str) -> str:
+    return text[:start] + block + text[end:]
+
+
+def harness_insert(harness: dict, path: Path | None = None) -> None:
+    """Append a new `[[harness]]` after the last existing one."""
+    p, text = _catalog_text(path)
+    block = _format_harness_block(harness)
+    hid = harness["id"]
+    spans = harness_blocks(text)
+    if _find_block(spans, hid):
+        raise SystemExit(f"cowbell: harness {hid!r} already exists")
+    if spans:
+        at = spans[-1]["end"]
+        new = _splice(text, at, at, block)
+    else:
+        pad = "" if not text or text.endswith("\n") else "\n"
+        new = text + pad + block
+    _commit_catalog(p, new)
+
+
+def harness_replace(hid: str, harness: dict, path: Path | None = None) -> None:
+    """Rewrite the `[[harness]]` block for `hid`. Comments inside that block are lost."""
+    p, text = _catalog_text(path)
+    spans = harness_blocks(text)
+    span = _find_block(spans, hid)
+    if span is None:
+        raise SystemExit(f"cowbell: no harness {hid!r}")
+    new_h = dict(harness)
+    new_h.setdefault("id", hid)
+    _commit_catalog(p, _splice(text, span["start"], span["end"], _format_harness_block(new_h)))
+
+
+def harness_delete(hid: str, path: Path | None = None) -> None:
+    """Remove the `[[harness]]` block for `hid`. Missing id is a no-op."""
+    p, text = _catalog_text(path)
+    span = _find_block(harness_blocks(text), hid)
+    if span is None:
+        return
+    _commit_catalog(p, _splice(text, span["start"], span["end"], ""))
+
+
+def _set_key_in_block(block: str, key: str, value) -> str:
+    dumped = _toml_dump_value(value)
+    lines = block.splitlines(keepends=True)
+    key_re = re.compile(rf"^([ \t]*)({re.escape(key)})([ \t]*=[ \t]*)")
+    last_assign = 0
+    for i, ln in enumerate(lines):
+        stripped = ln.lstrip()
+        if stripped.startswith("#") or not stripped.strip():
+            continue
+        if _table_header(ln) == "[[harness]]":
+            last_assign = i
+            continue
+        m = key_re.match(ln)
+        if m:
+            _, suffix = _parse_value_and_suffix(ln[m.end():])
+            lines[i] = f"{m.group(1)}{m.group(2)}{m.group(3)}{dumped}{suffix}"
+            return "".join(lines)
+        if "=" in ln.split("#", 1)[0]:
+            last_assign = i
+    lines.insert(last_assign + 1, f"{key} = {dumped}\n")
+    return "".join(lines)
+
+
+def harness_set_field(hid: str, key: str, value, path: Path | None = None) -> None:
+    """Set one field inside the `[[harness]]` block for `hid`, keeping comments."""
+    if not _BARE_KEY.match(key):
+        raise SystemExit(f"cowbell: invalid harness field {key!r}")
+    p, text = _catalog_text(path)
+    span = _find_block(harness_blocks(text), hid)
+    if span is None:
+        raise SystemExit(f"cowbell: no harness {hid!r}")
+    if key == "id":
+        new_id = value if isinstance(value, str) else str(value)
+        if new_id != hid and _find_block(harness_blocks(text), new_id):
+            raise SystemExit(f"cowbell: harness {new_id!r} already exists")
+    new_block = _set_key_in_block(span["text"], key, value)
+    _commit_catalog(p, _splice(text, span["start"], span["end"], new_block))
+
+
 # --- tui -------------------------------------------------------------------------
 # Herdr is mouse-first. The popup is a plain terminal, so the menu speaks the
 # terminal's own dialect: raw keys, SGR mouse (1006), alternate screen. Stdlib only.
