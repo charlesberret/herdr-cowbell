@@ -262,6 +262,54 @@ def at_or_beneath(path: str, root: str) -> bool:
     return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
 
 
+def same_tree(a: str, b: str) -> bool:
+    """Either path is the other, or one sits under the other."""
+    return bool(a and b and (at_or_beneath(a, b) or at_or_beneath(b, a)))
+
+
+def occupant_same(row: dict, agent: dict, tab_label: str = "") -> bool:
+    """The live pane still holds this sitting: same directory tree, or the tab still bears the sitting name."""
+    if same_tree(agent.get("cwd") or "", row.get("cwd") or ""):
+        return True
+    sitting = row.get("name") or ""
+    lab = slug(tab_label) if tab_label else ""
+    return bool(sitting and lab and sitting == lab)
+
+
+def bind_sitting(row: dict, live: dict) -> None:
+    """Copy the live occupant's pane, session, kind, and cwd onto a roster row."""
+    sid = live.get("session_id") or ((live.get("agent_session") or {}).get("value") or "")
+    if sid:
+        row["session_id"] = sid
+    live_kind = live.get("kind") or live.get("agent") or ""
+    old_kind = row.get("kind") or ""
+    if live_kind:
+        if (row.get("harness") or "") in ("", old_kind):
+            row["harness"] = live.get("harness") or live_kind
+        row["kind"] = live_kind
+    toks = live.get("tokens") if isinstance(live.get("tokens"), dict) else {}
+    qmodel = live.get("model") or toks.get("quota_model") or ""
+    if qmodel:
+        row["model"] = qmodel
+    if live.get("cwd"):
+        row["cwd"] = live["cwd"]
+    if live.get("pane_id"):
+        row["pane_id"] = live["pane_id"]
+    if live.get("tab_id"):
+        row["tab_id"] = live["tab_id"]
+    if live.get("workspace_id"):
+        row["workspace_id"] = live["workspace_id"]
+    row["last_seen"] = now()[:10]
+
+
+def unbind_sitting(row: dict) -> None:
+    """Drop a pane that now holds someone else. Session id was the new occupant's, so drop it too."""
+    row["pane_id"] = ""
+    row["tab_id"] = ""
+    row["workspace_id"] = ""
+    row["session_id"] = ""
+
+
 def git_root(path: str) -> str | None:
     proc = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     return proc.stdout.strip() or None if proc.returncode == 0 else None
@@ -1303,7 +1351,7 @@ def _here_exe(h: dict, cmd: list[str]) -> str:
 
 
 def unix_confine(cat: dict, root: str, cmd: list[str]) -> list[str]:
-    """Prefix agent-run + nono when the place names a unix_user. Identity first, then Landlock/Seatbelt."""
+    """Drop to the place's unix_user, then optional nono. agent-run if it is on PATH, else sudo -u."""
     import pwd
     pl = place_for(cat, root)
     defaults = cat.get("defaults") or {}
@@ -1321,10 +1369,7 @@ def unix_confine(cat: dict, root: str, cmd: list[str]) -> list[str]:
     try:
         pw = pwd.getpwnam(uid)
     except KeyError:
-        raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host (agent-uids/provision.sh)")
-    helper = shutil.which("agent-run") or "/usr/local/bin/agent-run"
-    if not os.path.isfile(helper):
-        raise SystemExit("cowbell: agent-run is not installed")
+        raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host")
     profile = os.path.expanduser((pl or {}).get("nono_profile") or defaults.get("nono_profile") or "")
     inner = list(cmd)
     if profile:
@@ -1334,7 +1379,16 @@ def unix_confine(cat: dict, root: str, cmd: list[str]) -> list[str]:
         inner = [nono, "run", "--silent", "--profile", profile, "--allow-cwd", "--"] + inner
     if os.geteuid() == pw.pw_uid:
         return inner
-    return [helper, uid, "--"] + inner
+    helper = shutil.which("agent-run")
+    if helper:
+        return [helper, uid, "--"] + inner
+    sudo = shutil.which("sudo")
+    if not sudo:
+        raise SystemExit(
+            f"cowbell: cannot drop to unix user {uid!r} "
+            "(agent-run is not installed and sudo is not on PATH)"
+        )
+    return [sudo, "-u", uid, "--"] + inner
 
 
 def _record_here(h: dict, name: str, root: str, model: str, lane: str, allow: str, deny: str,
@@ -1574,19 +1628,40 @@ def name_is_live(name: str) -> dict | None:
     return info.get("agent") or info
 
 
-def refresh_sessions(rows: list[dict]) -> None:
-    """Fill session ids the agent only reported after launch; match by pane."""
-    by_pane = {a["pane_id"]: a for a in live_agents() if a.get("pane_id")}
-    today = now()[:10]
+def refresh_sessions(rows: list[dict], agents: list[dict] | None = None,
+                     tab_labels: dict | None = None) -> None:
+    """Keep roster pane bindings on the sitting that still occupies them.
+
+    Same directory tree (or a tab that still bears the sitting name): fill
+    session id, kind, and cwd from the live agent. A different project in that
+    pane: unbind, so the name does not follow the new occupant.
+    """
+    if agents is None:
+        snap = snapshot()
+        agents = snap.get("agents") or live_agents()
+        if tab_labels is None:
+            tab_labels = {t.get("tab_id"): t.get("label") or "" for t in snap.get("tabs") or []}
+    tab_labels = tab_labels or {}
+    by_pane = {a["pane_id"]: a for a in agents if a.get("pane_id")}
     changed = False
     for r in rows:
-        a = by_pane.get(r.get("pane_id") or "")
-        if a:
-            sid = (a.get("agent_session") or {}).get("value")
-            if sid and sid != r.get("session_id"):
-                r["session_id"] = sid; changed = True
-            if r.get("last_seen") != today:
-                r["last_seen"] = today; changed = True
+        pane = str(r.get("pane_id") or "")
+        if not pane or pane.startswith("pid:"):
+            continue
+        a = by_pane.get(pane)
+        if not a:
+            continue
+        label = tab_labels.get(a.get("tab_id") or "", "")
+        if occupant_same(r, a, label):
+            before = (r.get("pane_id"), r.get("session_id"), r.get("kind"), r.get("harness"),
+                      r.get("cwd"), r.get("tab_id"), r.get("workspace_id"), r.get("last_seen"))
+            bind_sitting(r, a)
+            if before != (r.get("pane_id"), r.get("session_id"), r.get("kind"), r.get("harness"),
+                          r.get("cwd"), r.get("tab_id"), r.get("workspace_id"), r.get("last_seen")):
+                changed = True
+        else:
+            unbind_sitting(r)
+            changed = True
     if changed:
         save_roster(rows)
 
@@ -1795,6 +1870,18 @@ def report_identity(pane_id: str, name: str, kind: str, model: str = "") -> bool
         herdr("pane", "report-metadata", pane_id, "--source", COWBELL_SOURCE,
               "--ttl-ms", TOKEN_TTL_MS, "--display-agent", g,
               "--token", f"glyph={g}", "--token", f"line1={g} {name}")
+    except HerdrError:
+        return False
+    return True
+
+
+def clear_identity(pane_id: str) -> bool:
+    """Drop cowbell's badge on a pane that no longer holds that sitting."""
+    if not pane_id or str(pane_id).startswith("pid:"):
+        return False
+    try:
+        herdr("pane", "report-metadata", pane_id, "--source", COWBELL_SOURCE,
+              "--clear-display-agent", "--clear-token", "glyph", "--clear-token", "line1")
     except HerdrError:
         return False
     return True
@@ -2658,12 +2745,43 @@ def footer(can_widen: bool = False) -> str:
                             for k, v in hints)
 
 
+def _reclaim_cold(live: dict, cold: list[dict]) -> dict | None:
+    """A cold sitting that is this live agent, not a new name."""
+    sid = live.get("session_id") or ""
+    if sid:
+        hits = [r for r in cold if r.get("session_id") == sid]
+        if len(hits) == 1:
+            return hits[0]
+    name = live.get("name") or ""
+    cwd = live.get("cwd") or ""
+    by_name = [r for r in cold if name and r.get("name") == name]
+    if len(by_name) == 1 and (not cwd or not by_name[0].get("cwd") or same_tree(cwd, by_name[0]["cwd"])):
+        return by_name[0]
+    by_cwd = [r for r in cold if cwd and r.get("cwd") and same_tree(cwd, r["cwd"])]
+    if len(by_cwd) == 1:
+        return by_cwd[0]
+    return None
+
+
 def remember_live(reg: dict, rows: list[dict]) -> int:
-    """Running agents go on the roster as they are seen, so they can be resumed later. No adopt step."""
+    """Running agents go on the roster as they are seen, so they can be resumed later. No adopt step.
+
+    A cold sitting whose session, name+cwd, or unique cwd matches is rebound
+    instead of minting a second name (herdr-dev-2).
+    """
     taken = {r["name"] for r in rows}
+    live_ids = {str(x.get("pane_id") or "") for x in reg["live"] if x.get("pane_id")}
     added = 0
+    reclaimed = 0
     for r in reg["live"]:
         if r.get("on_roster") or not r.get("session_id"):
+            continue
+        cold = [x for x in rows if not x.get("pane_id") or str(x.get("pane_id") or "") not in live_ids]
+        hit = _reclaim_cold(r, cold)
+        if hit:
+            bind_sitting(hit, r)
+            r["on_roster"] = True
+            reclaimed += 1
             continue
         name = unique_name(slug(r["name"]) or slug(r.get("kind") or "agent"), taken)
         rows.append({"name": name, "cwd": r["cwd"], "harness": r["harness"], "kind": r["kind"], "model": "",
@@ -2673,7 +2791,7 @@ def remember_live(reg: dict, rows: list[dict]) -> int:
         r["on_roster"] = True
         taken.add(name)
         added += 1
-    if added:
+    if added or reclaimed:
         save_roster(rows)
     return added
 
