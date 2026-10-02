@@ -139,7 +139,7 @@ def seed_path() -> Path | None:
     return None
 
 
-SCHEMA = 1  # catalog and roster format this cowbell reads and writes
+SCHEMA = 1  # catalog, roster, and pins format this cowbell reads and writes
 
 
 class SchemaError(SystemExit):
@@ -494,6 +494,115 @@ def save_roster(rows: list[dict]) -> None:
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps({"schema": SCHEMA, "harnesses": rows}, indent=2) + "\n")
     os.replace(tmp, p)
+
+
+def pins_path() -> Path:
+    return state_dir() / "pins.json"
+
+
+def _norm_root(root: str) -> str:
+    return os.path.realpath(os.path.expanduser(root)) if root else ""
+
+
+def pins_schema(p: Path | None = None) -> int:
+    p = p or pins_path()
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return SCHEMA
+    return data.get("schema", SCHEMA) if isinstance(data, dict) else SCHEMA
+
+
+def load_pins() -> dict:
+    """Per-directory pin/hide. Keyed by realpath, then harness id (`pin` or `hide`)."""
+    p = pins_path()
+    if not p.exists():
+        return {"schema": SCHEMA, "dirs": {}}
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {"schema": SCHEMA, "dirs": {}}
+    if not isinstance(data, dict):
+        return {"schema": SCHEMA, "dirs": {}}
+    data.setdefault("schema", SCHEMA)
+    data.setdefault("dirs", {})
+    if not isinstance(data["dirs"], dict):
+        data["dirs"] = {}
+    return data
+
+
+def save_pins(data: dict) -> None:
+    p = pins_path()
+    check_writable(pins_schema(p), str(p))
+    dirs = data.get("dirs") or {}
+    write_atomic(p, json.dumps({"schema": SCHEMA, "dirs": dirs}, indent=2) + "\n")
+
+
+def dir_prefs(root: str, data: dict | None = None) -> dict:
+    """`{"pin": [ids…], "hide": [ids…]}` for this directory. Pin order is insertion order."""
+    data = data if data is not None else load_pins()
+    entry = (data.get("dirs") or {}).get(_norm_root(root)) or {}
+    pin, hide = [], []
+    if isinstance(entry, dict):
+        for hid, kind in entry.items():
+            if kind == "pin":
+                pin.append(hid)
+            elif kind == "hide":
+                hide.append(hid)
+    return {"pin": pin, "hide": hide}
+
+
+def _set_pref(root: str, hid: str, kind: str | None) -> None:
+    if not hid:
+        raise SystemExit("cowbell: pin/hide needs a harness id")
+    data = load_pins()
+    key = _norm_root(root)
+    dirs = dict(data.get("dirs") or {})
+    entry = dict(dirs.get(key) or {})
+    if kind is None:
+        entry.pop(hid, None)
+    else:
+        entry[hid] = kind
+    if entry:
+        dirs[key] = entry
+    else:
+        dirs.pop(key, None)
+    data["dirs"] = dirs
+    save_pins(data)
+
+
+def pin_harness(root: str, hid: str) -> None:
+    _set_pref(root, hid, "pin")
+
+
+def hide_harness(root: str, hid: str) -> None:
+    _set_pref(root, hid, "hide")
+
+
+def clear_pref(root: str, hid: str) -> None:
+    _set_pref(root, hid, None)
+
+
+def drop_harness_prefs(hid: str) -> None:
+    """Strip pin/hide for a deleted harness in every directory. No-op when absent."""
+    if not hid:
+        return
+    data = load_pins()
+    dirs = data.get("dirs") or {}
+    new_dirs = {}
+    changed = False
+    for cwd, entry in dirs.items():
+        if not isinstance(entry, dict) or hid not in entry:
+            new_dirs[cwd] = entry
+            continue
+        kept = {k: v for k, v in entry.items() if k != hid}
+        changed = True
+        if kept:
+            new_dirs[cwd] = kept
+    if not changed:
+        return
+    data["dirs"] = new_dirs
+    save_pins(data)
 
 
 def roster_here(rows: list[dict], root: str) -> list[dict]:
@@ -1020,9 +1129,14 @@ def picker_selectable(c: dict) -> bool:
     return c.get("section") != "running" or c.get("action") == "more"
 
 
-def rank_harnesses(ids: list[str], roster: list[dict], root: str, default: str = "") -> list[str]:
+def rank_harnesses(ids: list[str], roster: list[dict], root: str, default: str = "",
+                   prefs: dict | None = None) -> list[str]:
     """Most used here first (a start at or beneath root counts 3), then anywhere, then catalog order.
-    A place default_harness stays first so usage of a house grok in the pad does not bury the guest door."""
+    A place default_harness stays first so usage of a house grok in the pad does not bury the guest door.
+    Pin/hide overlay: pinned ids lead, hidden ids are omitted. Widen passes the widened root."""
+    prefs = prefs if prefs is not None else dir_prefs(root)
+    hidden = set(prefs.get("hide") or [])
+    ids = [h for h in ids if h not in hidden]
     order = {hid: i for i, hid in enumerate(ids)}
     score: dict[str, int] = {}
     latest: dict[str, str] = {}
@@ -1036,7 +1150,9 @@ def rank_harnesses(ids: list[str], roster: list[dict], root: str, default: str =
     out = sorted(out, key=lambda h: -score.get(h, 0))
     if default and default in out:
         out = [default] + [h for h in out if h != default]
-    return out
+    pinned = [h for h in (prefs.get("pin") or []) if h in out]
+    rest = [h for h in out if h not in set(pinned)]
+    return pinned + rest
 
 
 def ago(stamp: str, today: _dt.date | None = None) -> str:
@@ -2558,12 +2674,13 @@ def harness_replace(hid: str, harness: dict, path: Path | None = None) -> None:
 
 
 def harness_delete(hid: str, path: Path | None = None) -> None:
-    """Remove the `[[harness]]` block for `hid`. Missing id is a no-op."""
+    """Remove the `[[harness]]` block for `hid`. Missing id is a no-op.
+    Pin/hide entries for that id are dropped so the state file keeps no orphans."""
     p, text = _catalog_text(path)
     span = _find_block(harness_blocks(text), hid)
-    if span is None:
-        return
-    _commit_catalog(p, _splice(text, span["start"], span["end"], ""))
+    if span is not None:
+        _commit_catalog(p, _splice(text, span["start"], span["end"], ""))
+    drop_harness_prefs(hid)
 
 
 def _set_key_in_block(block: str, key: str, value) -> str:
