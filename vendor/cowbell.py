@@ -66,7 +66,8 @@ class HerdrError(RuntimeError):
 # --- colour ------------------------------------------------------------------
 # Palette: mostly grey, with one accent. Reads the terminal theme, not a config file.
 # Gold is Resume. Green is New Session. Blue is the numbers on rows you can open.
-# Active heading and box are light gray (secondary). Sitting and harness names are ink.
+# Cyan (teal) is the folder path. Active heading and box are light gray (secondary).
+# Sitting and harness names are ink.
 
 INK, SECONDARY, MUTED, FAINT = "#d8d8e0", "#a9a9b2", "#8a8a92", "#6c6d74"
 GOLD, GREEN, RED, TEAL, BLUE = "#c8a24a", "#7dba6f", "#d4756b", "#389bb4", "#7d9fc7"
@@ -107,7 +108,7 @@ def verdict_cell(v: dict) -> str:
 
 def header(reg: dict, git_top: str | None, wider: int | None, widen_hint: bool = True) -> list[str]:
     note = reg.get("place_note") or ""
-    out = [f"  {paint('cowbell', INK, bold=True)}  {paint(tilde(reg['root']), SECONDARY)}   "
+    out = [f"  {paint('cowbell', INK, bold=True)}  {paint(tilde(reg['root']), TEAL)}   "
            f"{paint('subject:', FAINT)} {paint(reg['subject'] or '?', MUTED)}"
            + (f"   {paint('place:', FAINT)} {paint(note, MUTED)}" if note else "")]
     if git_top and os.path.realpath(git_top) != os.path.realpath(reg["root"]):
@@ -1246,7 +1247,7 @@ def render_picker(reg: dict, choices: list[dict], git_top: str | None = None, wi
     if git_top and wider is not None and wider > len(reg["live"]):
         right = f"g widen to {os.path.basename(git_top.rstrip('/'))} · {wider} running"
     gap = width - 2 - len(path) - len(right)
-    out = [f"  {paint(path, SECONDARY, bold=True)}" + (f"{' ' * max(3, gap)}{paint(right, FAINT)}" if right else "")]
+    out = [f"  {paint(path, TEAL, bold=True)}" + (f"{' ' * max(3, gap)}{paint(right, FAINT)}" if right else "")]
     n = 0
     for section, title, fg in PICKER_SECTIONS:
         rows = [c for c in choices if c.get("section") == section]
@@ -2395,7 +2396,9 @@ def cmd_new(ctx: Ctx, cat: dict, hid: str, model="", lane="", allow="", deny="",
         raise SystemExit(f"cowbell: unknown harness {hid!r} (see: cowbell catalog)")
     if not installed(h):
         raise SystemExit(f"cowbell: {hid} is not installed here ({h.get('command') or h['kind']})")
-    lane = lane or ("" if is_wrapper(h) else cat["defaults"].get("lane", "yellow"))
+    lane = lane or harness_lane(h, cat)
+    allow = allow or harness_tools(h)[0]
+    deny = deny or harness_tools(h)[1]
     if lane and lane not in LANES:
         raise SystemExit(f"cowbell: lane must be one of {', '.join(LANES)}")
     model = model or (h["models"][0] if h["models"] else "")
@@ -2860,7 +2863,7 @@ def hint_bar(hints: list[tuple[str, str, str]]) -> tuple[str, list[tuple[int, in
     return "  " + "   ".join(parts), spans
 
 
-def menu(body: list[str], rows: list[int], hints: list[tuple[str, str, str]], selected: int = 0,
+def menu(body: list[str], rows: list[int], hints, selected: int = 0,
          hotkeys: str = "", flash: str = "", line_keys: dict[int, str] | None = None,
          numbered: list[int] | None = None, scr: Screen | None = None, tick: float | None = None) -> tuple:
     """Pick one of `rows` (line indexes into body).
@@ -2871,17 +2874,19 @@ def menu(body: list[str], rows: list[int], hints: list[tuple[str, str, str]], se
     Click or arrows / j k / wheel select; enter (or the ⏎ button) confirms; digits jump (and pick when
     unambiguous); esc or q cancels. Buttons and rows answer the press, so a popup host that forwards
     only presses still works; releases are ignored.
+    `hints` is `[(label, words, event), ...]` or a callable `selected ->` that list, so the bar can
+    follow the highlighted row.
     """
     selected = max(0, min(selected, len(rows) - 1))
     by_line = {ln: i for i, ln in enumerate(rows)}
     numbered = list(range(len(rows))) if numbered is None else numbered
     digits, top = "", 0
     flash = ((flash or "").splitlines() or [""])[0]
-    bar, spans = hint_bar(hints)
     own = scr is None
     scr = (scr or Screen()).open()
     try:
         while True:
+            bar, spans = hint_bar(hints(selected) if callable(hints) else hints)
             cols, height = shutil.get_terminal_size((100, 24))
             foot = ["", bar] + ([paint("  " + flash, RED)] if flash else [])
             view = max(3, height - len(foot))
@@ -3032,8 +3037,206 @@ def choose(title: str, items: list[str], default: int = 0, intro: str = "") -> i
     return i if 0 <= i < len(items) else None
 
 
+def parse_model_list(raw: str) -> list[str]:
+    return [p.strip() for p in (raw or "").split(",") if p.strip()]
+
+
+def harness_lane(h: dict, cat: dict) -> str:
+    if is_wrapper(h):
+        return ""
+    return (h.get("lane") or cat.get("defaults", {}).get("lane", "yellow") or "")
+
+
+def harness_tools(h: dict) -> tuple[str, str]:
+    return (h.get("tools_allow") or "", h.get("tools_deny") or "")
+
+
+def models_with_default(models: list[str], default: str) -> list[str]:
+    models = [m for m in models if m]
+    if not default:
+        return models
+    return [default] + [m for m in models if m != default]
+
+
+def harness_preset(src: dict, hid: str, title: str, model: str, lane: str,
+                   allow: str, deny: str) -> dict:
+    """A new [[harness]] copied from `src` with this sitting's model / lane / tools as defaults."""
+    out = {"id": hid, "kind": src.get("kind") or hid}
+    for k in ("command", "family", "egress", "trust_tool", "model_flag", "resume",
+              "tools_allow_flag", "tools_deny_flag", "system_prompt_flag", "session_id_flag",
+              "claim_flag"):
+        if src.get(k):
+            out[k] = src[k]
+    models = models_with_default(list(src.get("models") or []), model)
+    if models:
+        out["models"] = models
+    if title:
+        out["title"] = title
+    if lane:
+        out["lane"] = lane
+    if allow:
+        out["tools_allow"] = allow
+    if deny:
+        out["tools_deny"] = deny
+    return out
+
+
+def offer_save_as(src: dict, model: str, lane: str, allow: str, deny: str) -> str:
+    """Ask for a new harness id. Empty skip or Esc writes nothing. Returns the id, or \"\"."""
+    try:
+        raw = ask("  save as harness id (empty skip): ", "")
+    except KeyboardInterrupt:
+        return ""
+    if not (raw or "").strip():
+        return ""
+    hid = slug(raw)
+    title = src.get("title") or hid
+    if model:
+        title = f"{title} · {model}"
+    harness_insert(harness_preset(src, hid, title, model, lane, allow, deny))
+    print(f"  saved {hid}")
+    return hid
+
+
+def _lane_rows(cat: dict, h: dict) -> list[str]:
+    return [f"{paint(f'{ln:<8}', SECONDARY)} "
+            f"{paint(' '.join(cat.get('lanes', {}).get(h.get('kind', ''), {}).get(ln, [])) or 'agent default', MUTED)}"
+            for ln in LANES]
+
+
+def _ask_tools(h: dict) -> tuple[str, str]:
+    allow, deny = harness_tools(h)
+    if is_wrapper(h):
+        return "", ""
+    if h.get("tools_allow_flag"):
+        allow = ask("  tools allow (empty skip): ", allow)
+    if h.get("tools_deny_flag"):
+        deny = ask("  tools deny (empty skip): ", deny)
+    return allow, deny
+
+
+def edit_harness(cat: dict, hid: str) -> bool:
+    """Edit description, models, default model, default permissions, tool allow/deny. Esc writes nothing."""
+    h = harness_by_id(cat, hid)
+    if not h:
+        print(f"  unknown harness {hid}"); return False
+    print(f"  {paint(hid, INK, bold=True)}  edit")
+    title = ask("  description: ", h.get("title") or "")
+    models = parse_model_list(ask("  models (comma-separated): ", ", ".join(h.get("models") or [])))
+    if models:
+        cur = (h.get("models") or [models[0]])[0]
+        di = models.index(cur) if cur in models else 0
+        j = choose("default model", models, default=di, intro=paint(hid, INK, bold=True))
+        if j is None:
+            return False
+        models = models_with_default(models, models[j])
+    lane = h.get("lane") or ""
+    if not is_wrapper(h):
+        default_lane = harness_lane(h, cat) or "yellow"
+        j = choose("default permissions", _lane_rows(cat, h),
+                   default=LANES.index(default_lane) if default_lane in LANES else 1,
+                   intro=paint(hid, INK, bold=True))
+        if j is None:
+            return False
+        lane = LANES[j]
+    allow, deny = _ask_tools(h)
+    harness_set_field(hid, "title", title)
+    harness_set_field(hid, "models", models)
+    if lane:
+        harness_set_field(hid, "lane", lane)
+    if h.get("tools_allow_flag"):
+        harness_set_field(hid, "tools_allow", allow)
+    if h.get("tools_deny_flag"):
+        harness_set_field(hid, "tools_deny", deny)
+    print(f"  saved {hid}")
+    return True
+
+
+def add_harness(root: str, cat: dict) -> bool:
+    """Add from a herdr kind or a launcher script; unhide if this directory hid any."""
+    hidden = list(dir_prefs(root).get("hide") or [])
+    opts = ["herdr agent kind", "launcher script"] + (["unhide a hidden harness"] if hidden else [])
+    i = choose("add", opts)
+    if i is None:
+        return False
+    if hidden and i == 2:
+        j = choose("unhide", hidden)
+        if j is None:
+            return False
+        clear_pref(root, hidden[j])
+        print(f"  unhid {hidden[j]}")
+        return True
+    if i == 0:
+        kinds = sorted(AGENT_EXES)
+        j = choose("kind", kinds)
+        if j is None:
+            return False
+        kind = kinds[j]
+        hid = slug(ask(f"  id [{kind}]: ", kind))
+        title = ask("  description: ", kind)
+        models = parse_model_list(ask("  models (comma-separated, empty skip): ", ""))
+        rec: dict = {"id": hid, "kind": kind, "title": title}
+        if models:
+            rec["models"] = models
+        harness_insert(rec)
+        print(f"  added {hid}")
+        return True
+    path = ask("  launcher path: ", "")
+    if not (path or "").strip():
+        return False
+    path = os.path.expanduser(path.strip())
+    base = slug(Path(path).stem)
+    hid = slug(ask(f"  id [{base}]: ", base))
+    title = ask("  description: ", hid)
+    kinds = sorted(AGENT_EXES)
+    kind_default = Path(path).stem if Path(path).stem in AGENT_EXES else "pi"
+    j = choose("kind", kinds, default=kinds.index(kind_default) if kind_default in kinds else 0)
+    if j is None:
+        return False
+    harness_insert({"id": hid, "kind": kinds[j], "command": path, "title": title})
+    print(f"  added {hid}")
+    return True
+
+
+def remove_harness(hid: str) -> bool:
+    j = choose("remove", [f"remove {hid} from the catalog", "keep"], default=1)
+    if j != 0:
+        return False
+    harness_delete(hid)
+    print(f"  removed {hid}")
+    return True
+
+
+def toggle_pin(root: str, hid: str) -> str:
+    if hid in dir_prefs(root).get("pin", []):
+        clear_pref(root, hid)
+        return f"unpinned {hid}"
+    pin_harness(root, hid)
+    return f"pinned {hid}"
+
+
+def apply_hide(root: str, hid: str) -> str:
+    hide_harness(root, hid)
+    return f"hidden {hid}"
+
+
+def picker_hints(can_widen: bool, start_row: bool) -> list[tuple[str, str, str]]:
+    """Hint bar for the picker. e / p / h / − only on a Start new row; g only when widen applies."""
+    crowded = start_row and can_widen
+    hints = [("⏎", "" if crowded else "open", "enter"),
+             ("n", "new", "n"),
+             ("+", "add", "+"),
+             ("a", "adopt", "a")]
+    if can_widen:
+        hints.append(("g", "widen", "g"))
+    if start_row:
+        hints += [("e", "edit", "e"), ("p", "pin", "p"), ("h", "hide", "h"), ("-", "rm", "-")]
+    hints.append(("esc", "" if start_row else "close", "esc"))
+    return hints
+
+
 def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
-    """New with options: agent, name, model, permissions."""
+    """New with options: agent, name, model, permissions, optional tools, optional save-as."""
     hs = [h for h in cat.get("harness", [])]
     with ThreadPoolExecutor(max_workers=8) as pool:
         verdicts = dict(zip([h["id"] for h in hs], pool.map(lambda h: trust_match(h["trust_tool"], root), hs)))
@@ -3044,7 +3247,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
         hid, desc = f"{h['id']:<22}", h.get("title", "") if ok else "not installed"
         rows.append(f"{paint(hid, SECONDARY if ok else FAINT)} {paint(desc, MUTED if ok else FAINT)}"
                     f"{note.get(verdicts[h['id']]['verdict'], '')}")
-    intro = f"{paint('new tab in' if ctx.mode != 'here' else 'in this terminal ·', FAINT)} {paint(tilde(root), SECONDARY)}"
+    intro = f"{paint('new tab in' if ctx.mode != 'here' else 'in this terminal ·', FAINT)} {paint(tilde(root), TEAL)}"
     if not tui_ok():
         print(f"\n  {intro}")
     i = choose("agent", rows, intro=intro)
@@ -3069,29 +3272,32 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
         model = h["models"][j] if j < len(h["models"]) else ask("  model id: ")
     lane = ""
     if not is_wrapper(h):
-        default_lane = cat["defaults"].get("lane", "yellow")
-        lane_rows = [f"{paint(f'{ln:<8}', SECONDARY)} "
-                     f"{paint(' '.join(cat['lanes'].get(h['kind'], {}).get(ln, [])) or 'agent default', MUTED)}"
-                     for ln in LANES]
-        j = choose("permissions", lane_rows, default=LANES.index(default_lane) if default_lane in LANES else 1,
+        default_lane = harness_lane(h, cat) or "yellow"
+        j = choose("permissions", _lane_rows(cat, h),
+                   default=LANES.index(default_lane) if default_lane in LANES else 1,
                    intro=f"{head}  {paint(model, MUTED)}")
         if j is None:
             return False
         lane = LANES[j]
+    allow, deny = _ask_tools(h)
+    try:
+        offer_save_as(h, model, lane, allow, deny)
+    except SystemExit as e:
+        print(f"  {e}")
     seat = seat_file(root) if prompt_flag(h) else None
     if v["verdict"] == "overprivilege":
         print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
-    argv = build_argv(cat, h, model, lane, "", "", seat, sitting=name)
+    argv = build_argv(cat, h, model, lane, allow, deny, seat, sitting=name)
     shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
     if ctx.mode != "here":
         print(f"\n  {paint(name, INK, bold=True)}  {paint(shown, MUTED)}")
-    pane = launch(cat, h, name, root, ctx, model, lane, "", "", seat)
+    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat)
     print(f"  started {name} in {pane['pane_id']}")
     return True
 
 
 def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
-    """New with defaults: automatic name (unless [defaults] ask_name), default permissions, open now."""
+    """New with defaults: automatic name (unless [defaults] ask_name), harness lane/tools, open now."""
     h = harness_by_id(cat, hid)
     if not h:
         print(f"  unknown harness {hid}"); return False
@@ -3102,9 +3308,10 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
         print(f"  ⊘ refused: {hid} on {tilde(root)} is blocked {v['flag']}"); return False
     taken = live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()}
     base = unique_name(slug(h["id"]), taken)
-    lane = "" if is_wrapper(h) else cat["defaults"].get("lane", "yellow")
+    lane = harness_lane(h, cat)
+    allow, deny = harness_tools(h)
     if ctx.mode != "here":  # outside herdr, exec_here prints the command it hands the terminal to
-        print(f"  {paint(h['id'], INK, bold=True)}  {paint('new tab in', FAINT)} {paint(tilde(root), SECONDARY)}")
+        print(f"  {paint(h['id'], INK, bold=True)}  {paint('new tab in', FAINT)} {paint(tilde(root), TEAL)}")
     name = base
     if cat["defaults"].get("ask_name"):
         raw = ask(f"  name [{base}]  (esc = cancel): " if tui_ok() else f"  name [{base}]  (q = cancel): ", base)
@@ -3115,18 +3322,22 @@ def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
         print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
     model = h["models"][0] if h["models"] else ""
     seat = seat_file(root) if prompt_flag(h) else None
-    pane = launch(cat, h, name, root, ctx, model, lane, "", "", seat)
+    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat)
     print(f"  started {name} in {pane['pane_id']}")
     return True
 
 
-PICKER_HINTS = [("⏎", "open", "enter"), ("n", "new with options", "n"), ("a", "adopt", "a"),
-                ("g", "widen", "g"), ("esc", "close", "esc")]
 REFRESH_S = 2.0
+PICKER_HOTKEYS = "nwgae+ph-"
 
 
-def footer(can_widen: bool = False) -> str:
-    hints = [("number", "= open"), ("[n]", "new with options")] + ([("[g]", "widen")] if can_widen else []) + [("[q]", "")]
+def footer(can_widen: bool = False, start_row: bool = False) -> str:
+    hints = [("number", "= open"), ("[n]", "new"), ("[+]", "add")]
+    if can_widen:
+        hints.append(("[g]", "widen"))
+    if start_row:
+        hints += [("[e]", "edit"), ("[p]", "pin"), ("[h]", "hide"), ("[-]", "rm")]
+    hints.append(("[q]", ""))
     return "  " + "   ".join(f"{paint(k, GOLD if k == 'number' else MUTED)}{(' ' + paint(v, FAINT)) if v else ''}"
                             for k, v in hints)
 
@@ -3183,8 +3394,7 @@ def remember_live(reg: dict, rows: list[dict]) -> int:
 
 
 def picker(ctx: Ctx, cat: dict) -> int:
-    full_cat = cat
-    root, _, remapped = resolve_root(full_cat, ctx.cwd)
+    root, _, remapped = resolve_root(cat, ctx.cwd)
     tui = tui_ok()
     scr = Screen() if tui else None
     live = ctx.live
@@ -3202,6 +3412,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
 
     try:
         while True:
+            full_cat = load_catalog()
             place = place_for(full_cat, root)
             cat = scoped_catalog(full_cat, place)  # flows below (wizard, quick start) see only this place's harnesses
             rows = load_roster()
@@ -3232,9 +3443,14 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 openable = [c for c in choices if picker_selectable(c)]
                 keys = [c.get("key") for c in openable]
                 selected = keys.index(sel_key) if sel_key in keys else min(sel_at, max(0, len(keys) - 1))
-                hints = [hh for hh in PICKER_HINTS if hh[2] != "g" or can_widen]
-                res = menu([""] + text.split("\n"), [c["row"] + 1 for c in openable], hints,
-                           selected=selected, hotkeys="nwga", flash=flash,
+
+                def hints_for(sel, _openable=openable, _widen=can_widen):
+                    start = bool(_openable and 0 <= sel < len(_openable)
+                                 and _openable[sel].get("action") == "raise")
+                    return picker_hints(_widen, start)
+
+                res = menu([""] + text.split("\n"), [c["row"] + 1 for c in openable], hints_for,
+                           selected=selected, hotkeys=PICKER_HOTKEYS, flash=flash,
                            line_keys={1: "g"} if can_widen else None,
                            numbered=[i for i, c in enumerate(openable) if c.get("idx")], scr=scr, tick=REFRESH_S)
                 if res[0] in ("pick", "tick") and openable:
@@ -3251,12 +3467,12 @@ def picker(ctx: Ctx, cat: dict) -> int:
                     raw = ""
                 elif res[0] == "key":
                     raw = res[1]
-                    # only `a` means "this highlighted row"; n/w/g must not focus it
-                    hit = (openable[sel_at] if raw == "a" and openable and 0 <= sel_at < len(openable)
+                    # a / e / p / h / − use the highlighted row; n / w / g / + do not
+                    hit = (openable[sel_at] if raw in "aeph-" and openable and 0 <= sel_at < len(openable)
                            else None)
                 else:
                     hit, raw = None, res[1] if len(res) > 1 else ""
-                if hit and hit["action"] == "more" and raw != "a":
+                if hit and hit["action"] == "more" and raw not in ("a", "e", "p", "h", "-"):
                     expanded.add(hit["section"])
                     continue
             else:
@@ -3274,6 +3490,15 @@ def picker(ctx: Ctx, cat: dict) -> int:
                 root = top or root
                 sel_key = ""
                 continue
+            if raw == "p":
+                if hit and hit.get("action") == "raise":
+                    flash = toggle_pin(root, hit["target"]["harness"])
+                continue
+            if raw == "h":
+                if hit and hit.get("action") == "raise":
+                    flash = apply_hide(root, hit["target"]["harness"])
+                    sel_key = ""
+                continue
             if raw == "a":
                 pane = adopt_pane_for_picker(hit, reg["live"], (snap or {}).get("focused_pane_id"))
                 if not pane and tui:
@@ -3288,16 +3513,28 @@ def picker(ctx: Ctx, cat: dict) -> int:
                     else:
                         print(f"  {e}")
                 continue
-            if raw not in ("w", "n") and not hit:
+            prompts = raw in ("w", "n", "+", "e", "-")
+            if not prompts and not hit:
                 continue
             if hit and hit["action"] == "focus":
                 continue  # Active is a census; cowbell cannot take over a sitting already running
+            if raw in ("e", "-") and not (hit and hit.get("action") == "raise"):
+                continue
             if scr:
                 scr.close()
                 sys.stdout.write("\x1b[H\x1b[2J")  # prompts that follow start on a clean popup
             try:
                 if raw in ("w", "n"):
                     done = wizard(ctx, cat, root)
+                elif raw == "+":
+                    add_harness(root, full_cat)
+                    done = False
+                elif raw == "e":
+                    edit_harness(full_cat, hit["target"]["harness"])
+                    done = False
+                elif raw == "-":
+                    remove_harness(hit["target"]["harness"])
+                    done = False
                 elif hit["action"] == "enter":
                     cmd_enter(ctx, cat, hit["target"]["name"], root, target=hit["target"])
                     done = True
