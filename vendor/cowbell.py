@@ -1965,17 +1965,33 @@ def focus_agent(pane_id: str) -> None:
 # an adopt, or a state change seen during a picker refresh — with --source cowbell.
 # No [[startup]], no interval thread; bt-reporter (the clocks) stays a separate,
 # disabled tool. Sittings cowbell does not know stay unbadged until adopt.
-# Glyphs are the sidebar's table (agent-deck's, by Charles's eye in Menlo 2026-09-12).
+# $glyph is a Lobe Icons Font plane-15 mark (hschne/lobe-icons-font). Ghostty
+# maps U+F4000-U+F47FF onto family "lobe-icons". No TTL: the plate paints this
+# token, and a 24h overlay made the badges vanish.
 
 COWBELL_SOURCE = "cowbell"
-TOKEN_TTL_MS = "86400000"
+
+# Kind → Lobe Icons Font codepoint (codepoints.json in hschne/lobe-icons-font).
+LOBE_GLYPH = {
+    "claude":       "\U000F4036",
+    "claudecode":   "\U000F4037",
+    "grok":         "\U000F4079",
+    "gemini":       "\U000F406B",
+    "geminicli":    "\U000F406C",
+    "agy":          "\U000F4015",  # Antigravity
+    "antigravity":  "\U000F4015",
+    "codex":        "\U000F403E",
+    "openai":       "\U000F40D0",
+    "pi":           "\U000F413E",
+    "copilot":      "\U000F4046",
+    "devin":        "\U000F4056",
+    "ollama":       "\U000F40CF",
+}
 
 
 def glyph_for(kind: str, model: str = "") -> str:
-    m = (model or "").lower()
-    if kind == "claude":   # heavier glyph = bigger model (✳ sonnet/haiku, ✼ opus/fable/unknown)
-        return "✳" if ("haiku" in m or "sonnet" in m) else "✼"
-    return {"grok": "ϟ", "pi": "◇", "gemini": "✦", "codex": "◈"}.get(kind, "·")
+    del model  # kind is the harness; Claude sonnet/opus share one mark
+    return LOBE_GLYPH.get(kind or "", "·")
 
 
 def report_identity(pane_id: str, name: str, kind: str, model: str = "") -> bool:
@@ -1985,7 +2001,7 @@ def report_identity(pane_id: str, name: str, kind: str, model: str = "") -> bool
     g = glyph_for(kind, model)
     try:
         herdr("pane", "report-metadata", pane_id, "--source", COWBELL_SOURCE,
-              "--ttl-ms", TOKEN_TTL_MS, "--display-agent", g,
+              "--display-agent", g,
               "--token", f"glyph={g}", "--token", f"line1={g} {name}")
     except HerdrError:
         return False
