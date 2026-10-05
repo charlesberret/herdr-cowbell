@@ -20,6 +20,14 @@
 # set or replay. (Raised under herdr, session ids are observed and replay works
 # for any harness that has a `resume` spec.) `cowbell list` still shows every
 # row; Resume just does not offer what it cannot resume.
+#
+# A place ([places.<name>]) can limit which harnesses start there, and can
+# drop to another unix account. This seed ships no place.
+# unix_user is an account name (getpwnam). When the process is not already
+# that user, cowbell prefixes `agent-run <user> --` if agent-run is on PATH,
+# otherwise `sudo -u <user> --`. require_uid = true with no unix_user refuses
+# to start. nono_profile, when set, wraps the command in nono inside that
+# drop. The README has a copyable example.
 
 schema = 1           # file format; a newer cowbell may raise it, an older one will not write it
 

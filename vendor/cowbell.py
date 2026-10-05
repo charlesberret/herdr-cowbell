@@ -2804,7 +2804,9 @@ class Screen:
             return self
         self.fd = sys.stdin.fileno()
         self.saved = termios.tcgetattr(self.fd)
-        tty.setraw(self.fd)
+        # TCSADRAIN, not TCSAFLUSH: a key typed while a prompt is closing must
+        # still be there when the picker reads again.
+        tty.setraw(self.fd, termios.TCSADRAIN)
         self.tail = b""
         sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1006h")
         sys.stdout.flush()
@@ -2984,7 +2986,7 @@ def line_input(prompt: str, default: str = "") -> str:
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     buf, tail = "", b""
-    tty.setraw(fd)
+    tty.setraw(fd, termios.TCSADRAIN)
     try:
         while True:
             sys.stdout.write(f"\r{prompt}{buf}\x1b[K")
