@@ -1075,9 +1075,10 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
             idx += 1
             r["idx"] = idx
             tag = "" if r["on_roster"] else "  (not on roster)"
-            name, harness = f"{r['name']:<24}", f"{r['harness']:<14}"
+            name = f"{r['name']:<24}"
+            g = glyph_for(r.get("kind") or r.get("harness") or "")
             rest = f"{r['pane_id']:<8} {(r.get('session_id') or '')[:8]:<8} {tilde(r['cwd'])}{tag}"
-            out.append(f"  {key(idx)}  {paint(name, INK, bold=True)} {paint(harness, MUTED)} "
+            out.append(f"  {key(idx)}  {paint(name, INK, bold=True)} {g} "
                        f"{status_cell(r['status'], 9)} {paint(rest, FAINT)}")
     if reg["cold"]:
         # Resume only what can resume: a row without a session id would just start fresh (LAB-298).
@@ -1088,9 +1089,10 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
         for r in cold:
             idx += 1
             r["idx"] = idx
-            name, harness = f"{r['name']:<24}", f"{r.get('harness') or r.get('kind'):<14}"
+            name = f"{r['name']:<24}"
+            g = glyph_for(r.get("kind") or r.get("harness") or "")
             rest = f"{r.get('pane_id') or DASH:<8} {(r.get('session_id') or '')[:8]:<8} {tilde(r['cwd'])}"
-            out.append(f"  {key(idx)}  {paint(name, SECONDARY)} {paint(harness, MUTED)} "
+            out.append(f"  {key(idx)}  {paint(name, SECONDARY)} {g} "
                        f"{status_cell(r['status'], 9)} {paint(rest, FAINT)}")
     if not reg["live"] and not reg["cold"]:
         out.append("")
@@ -1184,23 +1186,25 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
     ws_labels = ws_labels or {}
     live: list[dict] = []
     for r in sorted(reg["live"], key=lambda r: bool(here_ws) and r.get("workspace_id") != here_ws):
-        name, kind = f"{r['name']:<22}", f"{r.get('kind') or r['harness'] or '':<11}"
+        name = f"{r['name']:<22}"
+        g = glyph_for(r.get("kind") or r.get("harness") or "")
         where = ws_labels.get(r.get("workspace_id") or "", "") if r.get("workspace_id") != here_ws else ""
         where = f"in {where}" if where else f"on {r['tty']}" if r.get("tty") else ""
         clock_w = max((len(x.get("since") or "") for x in reg["live"]), default=0)
         clock = f"{r.get('since', ''):<{clock_w + 2}}" if clock_w else ""
         extra = f"{clock}{where}".rstrip()
         live.append({"action": "focus", "target": r, "key": f"focus:{r['pane_id']}",
-                     "line": f"{paint(name, INK, bold=True)} {paint(kind, MUTED)} {status_cell(r['status'])}"
+                     "line": f"{paint(name, INK, bold=True)} {g} {status_cell(r['status'])}"
                              + (f" {paint(extra, FAINT)}" if extra else "")})
     # Resume only what can resume: a row without a session id would just start fresh.
     cold = sorted((r for r in reg["cold"] if r.get("session_id")),
                   key=lambda r: r.get("last_seen") or r.get("created") or "", reverse=True)
     resume = []
     for r in cold:
-        name, kind = f"{r['name']:<22}", f"{r.get('harness') or r.get('kind') or '':<11}"
+        name = f"{r['name']:<22}"
+        g = glyph_for(r.get("kind") or r.get("harness") or "")
         resume.append({"action": "enter", "target": r, "key": f"enter:{r['name']}",
-                       "line": f"{paint(name, INK, bold=True)} {paint(kind, MUTED)} "
+                       "line": f"{paint(name, INK, bold=True)} {g} "
                                f"{paint(ago(r.get('last_seen') or r.get('created') or ''), FAINT)}"})
     pool = {a["harness"]: a for a in reg.get("startable", reg["absent"])
             if a.get("installed") and a.get("trust", {}).get("verdict") != "blocked"}
@@ -1212,8 +1216,9 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
         a = pool[hid]
         warn = f"   {paint('! more reach than needed', FAINT)}" \
             if a.get("trust", {}).get("verdict") == "overprivilege" else ""
+        g = glyph_for(a.get("kind") or hid)
         start.append({"action": "raise", "target": a, "key": f"raise:{hid}",
-                      "line": f"{paint(f'{hid:<22}', INK, bold=True)} "
+                      "line": f"{g} {paint(f'{hid:<22}', INK, bold=True)} "
                               + paint(f"{a.get('title') or '':<{title_w}}" if warn else a.get("title") or "", MUTED) + warn})
     out = []
     for section, rows in (("running", live), ("resume", resume), ("start", start)):
@@ -1990,7 +1995,7 @@ LOBE_GLYPH = {
 
 
 def glyph_for(kind: str, model: str = "") -> str:
-    del model  # kind is the harness; Claude sonnet/opus share one mark
+    """One Lobe mark per harness kind. `model` stays on the call sites (quota_model)."""
     return LOBE_GLYPH.get(kind or "", "·")
 
 
