@@ -65,7 +65,9 @@ yellow = ["--permission-mode", "acceptEdits"]
 red    = ["--always-approve"]
 
 [lanes.codex]
-# Codex CLI sandbox flags (not verified against an installed codex here).
+# Verified 2026-10-05 against @openai/codex 0.160.1 (`npx`; not on PATH here).
+# --sandbox values: read-only | workspace-write | danger-full-access.
+# Red is the documented bypass (alias --yolo); long form only.
 green  = ["--sandbox", "read-only"]
 yellow = ["--sandbox", "workspace-write"]
 red    = ["--dangerously-bypass-approvals-and-sandbox"]
