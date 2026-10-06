@@ -3006,7 +3006,7 @@ def line_input(prompt: str, default: str = "") -> str:
     import select, termios, tty
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
-    buf, tail = "", b""
+    buf, tail = default, b""
     tty.setraw(fd, termios.TCSADRAIN)
     try:
         while True:
@@ -3139,7 +3139,7 @@ def _ask_tools(h: dict) -> tuple[str, str]:
 
 
 def edit_harness(cat: dict, hid: str) -> bool:
-    """Edit description, models, default model, default permissions, tool allow/deny. Esc writes nothing."""
+    """Rewrite catalog fields for a harness. Esc writes nothing. Picker `e` is edit_sitting, not this."""
     h = harness_by_id(cat, hid)
     if not h:
         print(f"  unknown harness {hid}"); return False
@@ -3258,6 +3258,67 @@ def picker_hints(can_widen: bool, start_row: bool) -> list[tuple[str, str, str]]
     return hints
 
 
+def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: str,
+                       *, save_as: bool) -> bool:
+    """Pick model, permissions, and tools for this sitting, then start. Esc cancels."""
+    head = f"{paint(name, INK, bold=True)}  {paint(h['id'], MUTED)}"
+    model = ""
+    models = list(h.get("models") or [])
+    if models:
+        j = choose("model", models + ["(type another)"], intro=head)
+        if j is None:
+            return False
+        model = models[j] if j < len(models) else ask("  model id: ")
+    lane = ""
+    if not is_wrapper(h):
+        default_lane = harness_lane(h, cat) or "yellow"
+        j = choose("permissions", _lane_rows(cat, h),
+                   default=LANES.index(default_lane) if default_lane in LANES else 1,
+                   intro=f"{head}  {paint(model, MUTED)}")
+        if j is None:
+            return False
+        lane = LANES[j]
+    allow, deny = _ask_tools(h)
+    if save_as:
+        try:
+            offer_save_as(h, model, lane, allow, deny)
+        except SystemExit as e:
+            print(f"  {e}")
+    seat = seat_file(root) if prompt_flag(h) else None
+    if v["verdict"] == "overprivilege":
+        print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
+    argv = build_argv(cat, h, model, lane, allow, deny, seat, sitting=name)
+    shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
+    if ctx.mode != "here":
+        print(f"\n  {paint(name, INK, bold=True)}  {paint(shown, MUTED)}")
+    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat)
+    print(f"  started {name} in {pane['pane_id']}")
+    return True
+
+
+def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
+    """New Session `e`: set this sitting's model / permissions / tools from the harness defaults, then start.
+
+    Does not rewrite the catalog. Esc returns to the picker.
+    """
+    h = harness_by_id(cat, hid)
+    if not h:
+        print(f"  unknown harness {hid}"); return False
+    if not installed(h):
+        print(f"  {hid} is not installed here"); return False
+    v = trust_match(h["trust_tool"], root)
+    if v["verdict"] == "blocked":
+        print(f"  ⊘ refused: {hid} on {tilde(root)} is blocked {v['flag']}"); return False
+    taken = live_names(ctx.live.snapshot()) | {r["name"] for r in load_roster()}
+    name = unique_name(slug(h["id"]), taken)
+    intro = f"{paint('new tab in' if ctx.mode != 'here' else 'in this terminal ·', FAINT)} {paint(tilde(root), TEAL)}"
+    print(f"  {paint(h['id'], INK, bold=True)}  {intro}")
+    has_settings = bool(h.get("models")) or not is_wrapper(h)
+    if not has_settings:
+        name = unique_name(slug(ask(f"  name [{name}]: ", name)), taken)
+    return raise_with_options(ctx, cat, h, root, v, name, save_as=False)
+
+
 def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
     """New with options: agent, name, model, permissions, optional tools, optional save-as."""
     hs = [h for h in cat.get("harness", [])]
@@ -3286,37 +3347,7 @@ def wizard(ctx: Ctx, cat: dict, root: str) -> bool:
     base = unique_name(slug(h["id"]), taken)
     print(f"  {paint(h['id'], INK, bold=True)}  {intro}")
     name = unique_name(slug(ask(f"  name [{base}]: ", base)), taken)
-    head = f"{paint(name, INK, bold=True)}  {paint(h['id'], MUTED)}"
-    model = ""
-    if h["models"]:
-        j = choose("model", h["models"] + ["(type another)"], intro=head)
-        if j is None:
-            return False
-        model = h["models"][j] if j < len(h["models"]) else ask("  model id: ")
-    lane = ""
-    if not is_wrapper(h):
-        default_lane = harness_lane(h, cat) or "yellow"
-        j = choose("permissions", _lane_rows(cat, h),
-                   default=LANES.index(default_lane) if default_lane in LANES else 1,
-                   intro=f"{head}  {paint(model, MUTED)}")
-        if j is None:
-            return False
-        lane = LANES[j]
-    allow, deny = _ask_tools(h)
-    try:
-        offer_save_as(h, model, lane, allow, deny)
-    except SystemExit as e:
-        print(f"  {e}")
-    seat = seat_file(root) if prompt_flag(h) else None
-    if v["verdict"] == "overprivilege":
-        print(f"  {paint('! ' + trust_note(h['id'], v, root), FAINT)}")
-    argv = build_argv(cat, h, model, lane, allow, deny, seat, sitting=name)
-    shown = shell_join([h["command"], *argv]) if is_wrapper(h) else shell_join([h["kind"], *argv])
-    if ctx.mode != "here":
-        print(f"\n  {paint(name, INK, bold=True)}  {paint(shown, MUTED)}")
-    pane = launch(cat, h, name, root, ctx, model, lane, allow, deny, seat)
-    print(f"  started {name} in {pane['pane_id']}")
-    return True
+    return raise_with_options(ctx, cat, h, root, v, name, save_as=True)
 
 
 def raise_quick(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
@@ -3553,8 +3584,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
                     add_harness(root, full_cat)
                     done = False
                 elif raw == "e":
-                    edit_harness(full_cat, hit["target"]["harness"])
-                    done = False
+                    done = edit_sitting(ctx, cat, hit["target"]["harness"], root)
                 elif raw == "-":
                     remove_harness(hit["target"]["harness"])
                     done = False
