@@ -1,15 +1,19 @@
 """herdr-cowbell packaging: manifest, vendored core, which core runs, a fresh checkout, the plugin commands.
 
 Core behaviour is tested in the cowbell tree; these tests only cover what this plugin adds.
+The vendored herdr raise is pinned here: a place with unix_user must pane-run agent-run.
 """
 import json
 import os
+import pwd
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -52,6 +56,8 @@ class Packaging(unittest.TestCase):
         text = (ROOT / "vendor" / "cowbell.py").read_text()
         for name in ("keys_install_text", "def cmd_open", "picker_open_args", "def import_seats"):
             self.assertNotIn(name, text)
+        self.assertIn("def unix_confine(", text)
+        self.assertIn("unix_confine(cat, root, base)", text)
         pin = json.loads((ROOT / "vendor" / "VENDORED.json").read_text())
         version = ".".join(map(str, hm.vendored_version()))
         self.assertEqual(pin["version"], version)
@@ -277,6 +283,132 @@ class OpenCtx(unittest.TestCase):
         # no pane get: cwd hole is left empty (picker --cwd omitted)
         self.assertNotIn("focused_pane_cwd", ctx)
         self.assertNotIn("--cwd", hm.picker_open_args(ctx))
+
+
+class VendoredUnixConfine(unittest.TestCase):
+    """A herdr raise in a place with unix_user runs agent-run.
+
+    `herdr agent start` launches as the server uid, so the vendored core
+    sends `pane run` of `agent-run <uid> -- <cmd>` (or `sudo -u` when
+    agent-run is not on PATH). The tab command is not the caller's.
+
+    `cowbell adopt` only records a pane that is already running. It cannot
+    change that pane's uid, and it does not re-exec.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.root = self.base / "proj"
+        self.root.mkdir()
+        self._saved = {
+            "PATH": os.environ.get("PATH"),
+            "COWBELL_CONFIG_DIR": os.environ.get("COWBELL_CONFIG_DIR"),
+            "COWBELL_STATE_DIR": os.environ.get("COWBELL_STATE_DIR"),
+        }
+        os.environ["COWBELL_CONFIG_DIR"] = str(self.base / "cfg")
+        os.environ["COWBELL_STATE_DIR"] = str(self.base / "state")
+        self.addCleanup(self._restore_env)
+        self.me = pwd.getpwuid(os.geteuid()).pw_name
+        self.other = self._other_user()
+
+    def _restore_env(self):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _other_user(self) -> str:
+        for name in ("nobody", "daemon"):
+            try:
+                if pwd.getpwnam(name).pw_uid != os.geteuid():
+                    return name
+            except KeyError:
+                continue
+        for entry in pwd.getpwall():
+            if entry.pw_uid != os.geteuid() and entry.pw_name:
+                return entry.pw_name
+        self.skipTest("no other unix account on this host")
+
+    def _agent_run(self) -> Path:
+        bin_dir = self.base / "bin"
+        bin_dir.mkdir()
+        exe = bin_dir / "agent-run"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{self._saved['PATH'] or ''}"
+        return exe
+
+    def _raise(self, unix_user: str) -> list[tuple]:
+        cb = hm.core()
+        calls: list[tuple] = []
+
+        def fake_herdr(*args, expect_json=True):
+            calls.append(args)
+            if args[:2] == ("tab", "create"):
+                return {
+                    "root_pane": {"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1"},
+                    "tab": {"tab_id": "w1:t1", "workspace_id": "w1"},
+                }
+            if args[:2] == ("pane", "process-info"):
+                return {"process_info": {"foreground_processes": [{"name": "bash"}]}}
+            if args[:2] == ("agent", "start"):
+                return {"agent": {"agent_session": {"value": "sess-1"}}}
+            return {}
+
+        harness = {"id": "claude", "kind": "claude", "models": [], "resume": []}
+        cat = {
+            "places": {"lab": {"cwd": str(self.root), "unix_user": unix_user}},
+            "harness": [harness],
+            "defaults": {},
+            "lanes": {},
+        }
+        ctx = cb.Ctx(workspace_id="w1", cwd=str(self.root), mode="tab",
+                     live=cb.LiveSource(), launch=cb.HerdrLaunch())
+        with mock.patch.object(cb, "herdr", fake_herdr):
+            pane = ctx.launch.start(cat, harness, "lab-claude", str(self.root), ctx)
+        self.assertEqual(pane["pane_id"], "w1:p1")
+        return calls
+
+    def _pane_run(self, calls: list[tuple]) -> list[str]:
+        runs = [c for c in calls if c[:3] == ("pane", "run", "w1:p1")]
+        self.assertEqual(len(runs), 1, calls)
+        return shlex.split(runs[0][3])
+
+    def test_herdr_raise_with_unix_user_runs_agent_run(self):
+        exe = self._agent_run()
+        calls = self._raise(self.other)
+        self.assertFalse([c for c in calls if c[:2] == ("agent", "start")])
+        parts = self._pane_run(calls)
+        self.assertEqual(parts[0], str(exe))
+        self.assertEqual(parts[1:4], [self.other, "--", "claude"])
+        creates = [c for c in calls if c[:2] == ("tab", "create")]
+        self.assertEqual(creates[0][creates[0].index("--cwd") + 1], str(self.root))
+
+    def test_herdr_raise_without_agent_run_uses_sudo(self):
+        os.environ["PATH"] = "/usr/bin:/bin"
+        sudo = shutil.which("sudo")
+        if not sudo:
+            self.skipTest("sudo is not on PATH")
+        calls = self._raise(self.other)
+        parts = self._pane_run(calls)
+        self.assertEqual(parts[:5], [sudo, "-u", self.other, "--", "claude"])
+
+    def test_same_uid_stays_on_agent_start(self):
+        self._agent_run()
+        calls = self._raise(self.me)
+        self.assertFalse([c for c in calls if c[:2] == ("pane", "run")])
+        starts = [c for c in calls if c[:2] == ("agent", "start")]
+        self.assertEqual(starts[0][2], "lab-claude")
+        self.assertIn("claude", starts[0])
+
+    def test_adopt_does_not_reexec(self):
+        import inspect
+        src = inspect.getsource(hm.core().cmd_adopt)
+        self.assertNotIn("unix_confine", src)
+        self.assertNotIn("agent-run", src)
 
 
 if __name__ == "__main__":
