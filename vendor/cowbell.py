@@ -1204,7 +1204,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
         name = f"{r['name']:<22}"
         g = glyph_for(r.get("kind") or r.get("harness") or "")
         resume.append({"action": "enter", "target": r, "key": f"enter:{r['name']}",
-                       "line": f"{paint(name, INK, bold=True)} {g} "
+                       "line": f"{paint(name, INK, bold=True)} {g}  "
                                f"{paint(ago(r.get('last_seen') or r.get('created') or ''), FAINT)}"})
     pool = {a["harness"]: a for a in reg.get("startable", reg["absent"])
             if a.get("installed") and a.get("trust", {}).get("verdict") != "blocked"}
@@ -1218,7 +1218,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
             if a.get("trust", {}).get("verdict") == "overprivilege" else ""
         g = glyph_for(a.get("kind") or hid)
         start.append({"action": "raise", "target": a, "key": f"raise:{hid}",
-                      "line": f"{paint(f'{hid:<22}', INK, bold=True)} {g} "
+                      "line": f"{paint(f'{hid:<22}', INK, bold=True)} {g}  "
                               + paint(f"{a.get('title') or '':<{title_w}}" if warn else a.get("title") or "", MUTED) + warn})
     out = []
     for section, rows in (("running", live), ("resume", resume), ("start", start)):
