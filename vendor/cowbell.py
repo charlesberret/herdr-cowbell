@@ -1194,7 +1194,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
         clock = f"{r.get('since', ''):<{clock_w + 2}}" if clock_w else ""
         extra = f"{clock}{where}".rstrip()
         live.append({"action": "focus", "target": r, "key": f"focus:{r['pane_id']}",
-                     "line": f"{paint(name, INK, bold=True)} {g} {status_cell(r['status'])}"
+                     "line": f"{paint(name, INK, bold=True)} {g}  {status_cell(r['status'])}"
                              + (f" {paint(extra, FAINT)}" if extra else "")})
     # Resume only what can resume: a row without a session id would just start fresh.
     cold = sorted((r for r in reg["cold"] if r.get("session_id")),
