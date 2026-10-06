@@ -1218,7 +1218,7 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
             if a.get("trust", {}).get("verdict") == "overprivilege" else ""
         g = glyph_for(a.get("kind") or hid)
         start.append({"action": "raise", "target": a, "key": f"raise:{hid}",
-                      "line": f"{g} {paint(f'{hid:<22}', INK, bold=True)} "
+                      "line": f"{paint(f'{hid:<22}', INK, bold=True)} {g} "
                               + paint(f"{a.get('title') or '':<{title_w}}" if warn else a.get("title") or "", MUTED) + warn})
     out = []
     for section, rows in (("running", live), ("resume", resume), ("start", start)):
