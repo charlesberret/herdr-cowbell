@@ -838,6 +838,54 @@ def grok_sessions(root: str, cache: dict, home: Path | None = None) -> list[dict
 HISTORY_PROVIDERS = {"claude": claude_sessions, "grok": grok_sessions}
 
 
+def launch_history(cat: dict, root: str) -> list[dict]:
+    """Discover history as the uid that will launch here, crossing its home boundary when needed."""
+    import pwd
+    if not history_on(cat):
+        return discover_sessions(root, cat)
+    pl = place_for(cat, root)
+    uid = ((pl or {}).get("unix_user") or (cat.get("defaults") or {}).get("unix_user") or "").strip()
+    if not uid:
+        return discover_sessions(root, cat)
+    try:
+        pw = pwd.getpwnam(uid)
+    except KeyError:
+        raise SystemExit(f"cowbell: unix_user {uid!r} is not on this host")
+    home = Path(pw.pw_dir)
+    if os.geteuid() == pw.pw_uid:
+        return discover_sessions(root, cat, home=home)
+    helper = shutil.which("agent-run")
+    if helper:
+        prefix = [helper, uid, "--"]
+    else:
+        sudo = shutil.which("sudo")
+        if not sudo:
+            raise SystemExit(
+                f"cowbell: cannot discover sessions as unix user {uid!r} "
+                "(agent-run is not installed and sudo is not on PATH)"
+            )
+        prefix = [sudo, "-n", "-u", uid, "--"]
+    history_cat = {
+        "defaults": {"session_history": history_mode(cat)},
+        "harness": [{"id": h["id"]} for h in cat.get("harness", []) if h.get("id")],
+    }
+    proc = subprocess.run(
+        prefix + [sys.executable, str(Path(__file__).resolve()), "_history"],
+        input=json.dumps({"root": os.path.realpath(root), "home": str(home), "cat": history_cat}),
+        capture_output=True, text=True, timeout=15,
+    )
+    if proc.returncode:
+        detail = (proc.stderr.strip().splitlines() or [f"exit {proc.returncode}"])[-1]
+        raise SystemExit(f"cowbell: session discovery as {uid!r} failed: {detail}")
+    try:
+        rows = json.loads(proc.stdout)
+    except ValueError:
+        raise SystemExit(f"cowbell: session discovery as {uid!r} returned invalid metadata")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise SystemExit(f"cowbell: session discovery as {uid!r} returned invalid metadata")
+    return rows
+
+
 def discover_sessions(root: str, cat: dict, home: Path | None = None) -> list[dict]:
     """Sessions this directory has seen, from the harnesses' own stores. [] when off."""
     if not history_on(cat):
@@ -2154,7 +2202,7 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
     ctx.live.refresh_sessions(rows)
     agents, panes = ctx.live.agents(), ctx.live.panes()
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
-                         tab_label=tab_labels(ctx.live.snapshot()), history=discover_sessions(root, cat))
+                         tab_label=tab_labels(ctx.live.snapshot()), history=launch_history(cat, root))
     if place:
         reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
     if as_json:
@@ -2182,7 +2230,7 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
         if not hits:
             hits = [x for x in rows if name in x.get("name", "")]
         if not hits:
-            history = discover_sessions(root, cat)
+            history = launch_history(cat, root)
             hits = [x for x in history if x.get("name") == name]
             if not hits:
                 hits = [x for x in history if x.get("session_id") == name or (x.get("session_id") or "").startswith(name)]
@@ -3480,7 +3528,7 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if top and os.path.realpath(top) != os.path.realpath(root):
                 wider = sum(1 for a in agents if a.get("cwd") and at_or_beneath(a["cwd"], top))
             reg = build_registry(cat, root, agents, panes, rows, matcher=matcher_for(root),
-                                 tab_label=tab_labels(snap), history=discover_sessions(root, cat))
+                                 tab_label=tab_labels(snap), history=launch_history(full_cat, root))
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)
@@ -3687,6 +3735,11 @@ def main(argv: list[str]) -> int:
         print(__doc__); return 0
     if argv and argv[0] in ("-V", "--version"):
         print(f"cowbell {__version__}"); return 0
+    if argv and argv[0] == "_history":
+        payload = json.load(sys.stdin)
+        rows = discover_sessions(payload["root"], payload["cat"], home=Path(payload["home"]))
+        print(json.dumps(rows))
+        return 0
     if not argv:
         argv = ["picker"] if tui_ok() else ["status"]
     cmd, *rest = argv
