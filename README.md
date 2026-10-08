@@ -1,13 +1,44 @@
 # herdr-cowbell
 
-Pick an agent for this directory — resume one, or start new.
+Pick an agent for this directory — running here, resume, or start new.
 
-`herdr-cowbell` is a plugin for [herdr](https://github.com/herdrdev/herdr). It
-opens a popup that shows every coding agent already working in this directory
-(a census you cannot take over from here), every one that stopped here and can
-pick up where it left off, and the ones you can start. Choosing Resume or New
-Session lands it in a new herdr tab, named, in the right workspace. The same
-picker runs outside herdr as the `cowbell` command.
+`herdr-cowbell` is a plugin for [herdr](https://github.com/herdrdev/herdr). The
+same picker runs outside herdr as the `cowbell` command.
+
+## Install
+
+```bash
+herdr plugin install charlesberret/herdr-cowbell
+herdr plugin action invoke herdr-cowbell.open
+```
+
+That second line opens the picker. To reach it with a key instead:
+
+```bash
+herdr plugin action invoke herdr-cowbell.install-keys
+herdr server reload-config
+```
+
+**`install-keys` takes over `prefix+c`**, which is herdr's own new-tab binding.
+It is a separate, opt-in step: it backs up `config.toml`, blanks the built-in
+binding (keeping the original as a comment), and appends one marked block. It
+also writes `~/.config/cowbell/prefix-c.claimed`. After that, a herdr server
+start reasserts the block if an upgrade rewrote `config.toml` and gave
+`prefix+c` back to the bare new-tab command. `uninstall-keys` restores the
+original binding and forgets the claim. Skip this if you would rather keep
+`prefix+c` as it is, and bind the `open` action yourself.
+
+**Requirements.** herdr 0.9.0 or newer, and python 3.11 or newer on your PATH.
+macOS ships `/usr/bin/python3` at 3.9, which is too old; `brew install python`
+or `uv python install 3.12` is enough. No other dependencies — the plugin is
+stdlib Python.
+
+If you have previously run `herdr plugin link` on a local copy, unlink it first:
+herdr refuses to install over a linked plugin.
+
+The popup shows every coding agent already working in this directory, every one
+that stopped here and can pick up, and the ones you can start. Resume and New
+Session land in a new herdr tab.
 
 ```
   ~/code/acme                                  g widen to ~/code · 4 running
@@ -28,37 +59,6 @@ picker runs outside herdr as the `cowbell` command.
 
   ⏎ open   n new with options   g widen   esc close
 ```
-
-## Install
-
-```bash
-herdr plugin install charlesberret/herdr-cowbell
-herdr plugin action invoke herdr-cowbell.open
-```
-
-That second line opens the picker. To reach it with a key instead:
-
-```bash
-herdr plugin action invoke herdr-cowbell.install-keys
-herdr server reload-config
-```
-
-**`install-keys` takes over `prefix+c`**, which is herdr's own new-tab binding.
-It is a separate, opt-in step for that reason: it backs up `config.toml`, blanks
-the built-in binding (keeping the original as a comment), and appends one marked
-block. It also writes `~/.config/cowbell/prefix-c.claimed`. After that, a herdr
-server start reasserts the block if an upgrade rewrote `config.toml` and gave
-`prefix+c` back to the bare new-tab command. `uninstall-keys` restores the
-original binding and forgets the claim. If you would rather keep `prefix+c` as
-it is, skip this and bind the `open` action yourself.
-
-**Requirements.** herdr 0.9.0 or newer, and python 3.11 or newer on your PATH.
-macOS ships `/usr/bin/python3` at 3.9, which is too old; `brew install python`
-or `uv python install 3.12` is enough. No other dependencies — the plugin is
-stdlib Python.
-
-If you have previously run `herdr plugin link` on a local copy, unlink it first:
-herdr refuses to install over a linked plugin.
 
 ## What the three sections mean
 
@@ -109,17 +109,11 @@ remembered in `~/.local/state/cowbell/` (`COWBELL_CONFIG_DIR` /
 ## The `cowbell` command
 
 The picker is a standalone terminal program too, useful outside herdr or over
-ssh:
-
-```bash
-pip install cowbell          # or: brew install charlesberret/tap/cowbell
-cowbell
-```
-
-Inside herdr it opens a tab; elsewhere it replaces the current shell with the
-agent you picked. The plugin ships a pinned copy of it, and if the `cowbell` on
-your PATH is the same version or newer, the plugin runs that one instead — so
-upgrading the command upgrades the popup. Both read the same configuration.
+ssh. Run `cowbell` from a shell; inside herdr it opens a tab, elsewhere it
+replaces the current shell with the agent you picked. The plugin ships a pinned
+copy, and if the `cowbell` on your PATH is the same version or newer, the plugin
+runs that one instead — so upgrading the command upgrades the popup. Both read
+the same configuration.
 
 ## What it does not do
 

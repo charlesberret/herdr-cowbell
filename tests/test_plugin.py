@@ -71,6 +71,24 @@ class Packaging(unittest.TestCase):
     def test_no_core_copy_outside_vendor(self):
         self.assertFalse((ROOT / "cowbell.py").exists())
 
+    def test_claude_dir_is_gitignored(self):
+        gi = (ROOT / ".gitignore").read_text()
+        self.assertIn(".claude/", gi)
+
+    def test_picker_strings_stay_off_the_install_path(self):
+        text = (ROOT / "herdr_cowbell.py").read_text()
+        for needle in ("plugin install", "pipx", "uv tool", "brew", "awesome-herdr"):
+            self.assertNotIn(needle, text)
+
+    def test_readme_lede_installs_without_teaching_internals(self):
+        lede = "\n".join((ROOT / "README.md").read_text().splitlines()[:40]).lower()
+        self.assertIn("herdr plugin install", lede)
+        self.assertIn("install-keys", lede)
+        self.assertIn("python 3.11", lede)
+        for word in ("harness", "lane", "constitution"):
+            self.assertNotIn(word, lede)
+        self.assertNotIn("pip install cowbell", (ROOT / "README.md").read_text())
+
 
 class WhichCore(unittest.TestCase):
     """A cowbell on PATH at least as new as the vendored core wins; otherwise the vendored core runs."""
