@@ -43,8 +43,14 @@ class Packaging(unittest.TestCase):
         )
         self.assertTrue(commands)
         self.assertTrue(all(c[0] == "./bin/cowbell" for c in commands))
-        self.assertEqual({c[1] for c in commands}, {"open", "adopt", "keys", "picker"})
-        self.assertEqual(m["startup"], [{"command": ["./bin/cowbell", "keys", "ensure"]}])
+        self.assertEqual({c[1] for c in commands}, {"open", "adopt", "keys", "picker", "identity"})
+        self.assertEqual(
+            m["startup"],
+            [
+                {"command": ["./bin/cowbell", "keys", "ensure"]},
+                {"command": ["./bin/cowbell", "identity", "stamp"]},
+            ],
+        )
         picker = next(p for p in m["panes"] if p["id"] == "picker")
         self.assertEqual(picker["title"], "\u2800\u2800cowbell")
 

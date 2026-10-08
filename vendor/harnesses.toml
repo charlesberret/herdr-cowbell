@@ -22,12 +22,28 @@
 # row; Resume just does not offer what it cannot resume.
 #
 # A place ([places.<name>]) can limit which harnesses start there, and can
-# drop to another unix account. This seed ships no place.
+# drop to another unix account. This seed ships no place table. Copy the
+# example below into this file (uncommented) if you want one.
+#
+# [[harness]]
+# id = "lab"
+# kind = "lab"
+# title = "Lab shell"
+# command = "/bin/bash"
+#
+# [places.lab]
+# cwd = "~/lab"
+# allow_harness = ["lab"]
+# default_harness = "lab"
+# unix_user = "lab"
+# require_uid = true
+# nono_profile = "~/.config/nono/lab.json"
+#
 # unix_user is an account name (getpwnam). When the process is not already
 # that user, cowbell prefixes `agent-run <user> --` if agent-run is on PATH,
 # otherwise `sudo -u <user> --`. require_uid = true with no unix_user refuses
 # to start. nono_profile, when set, wraps the command in nono inside that
-# drop. The README has a copyable example.
+# drop. Omit nono_profile if you do not use nono.
 
 schema = 1           # file format; a newer cowbell may raise it, an older one will not write it
 

@@ -40,6 +40,11 @@ command = ["./bin/cowbell", "keys", "uninstall"]
 [[startup]]
 command = ["./bin/cowbell", "keys", "ensure"]
 
+# Overlay $glyph is not durable across a server restart. Restamp from live
+# detector kind (plus Claude quota_model) with no TTL.
+[[startup]]
+command = ["./bin/cowbell", "identity", "stamp"]
+
 [[panes]]
 id = "picker"
 # Herdr draws the popup title against the inner left border and trims ordinary
