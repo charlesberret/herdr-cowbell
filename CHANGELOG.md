@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restamp or clear `$glyph` when herdr reports `pane.agent_detected` or
+  `pane.exited`, so a tab that swaps harnesses does not keep the old mark.
 - Restamp live `$glyph` from detector kind on plugin startup.
 - Vendor cowbell 0.3.1 through `fab919d` (picker Lobe marks, Resume scoped to
   the launch uid, picker `e` starts).

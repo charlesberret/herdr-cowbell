@@ -45,6 +45,17 @@ command = ["./bin/cowbell", "keys", "ensure"]
 [[startup]]
 command = ["./bin/cowbell", "identity", "stamp"]
 
+# Occupancy: herdr already knows when the pane's agent changes. Restamp or
+# clear $glyph from detector kind so a tab that exits grok and starts claude
+# does not keep the grok mark. Event-driven; not a clock.
+[[events]]
+on = "pane.agent_detected"
+command = ["./bin/cowbell", "identity", "sync"]
+
+[[events]]
+on = "pane.exited"
+command = ["./bin/cowbell", "identity", "sync"]
+
 [[panes]]
 id = "picker"
 # Herdr draws the popup title against the inner left border and trims ordinary

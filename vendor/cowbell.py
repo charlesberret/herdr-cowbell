@@ -16,6 +16,8 @@
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
   cowbell reconcile [--dry-run] rewrite a claimed pane border from the agent Herdr detects
+  cowbell identity stamp        publish $glyph for every live herdr agent pane (detector kind)
+  cowbell identity sync         restamp or clear one pane from a herdr occupancy event
 
 A person running cowbell gets the session in this terminal, including inside herdr
 (`COWBELL_CALLER=person` forces that). An agent caller inside a herdr pane opens a new tab
@@ -2014,13 +2016,14 @@ def focus_agent(pane_id: str) -> None:
 
 
 # herdr sidebar tokens (event-driven; never a loop) — LAB-297.
-# Identity tokens for sittings cowbell knows, published once per event — a raise,
-# an adopt, or a state change seen during a picker refresh — with --source cowbell.
-# No [[startup]], no interval thread; bt-reporter (the clocks) stays a separate,
-# disabled tool. Sittings cowbell does not know stay unbadged until adopt.
+# Kind is the occupant herdr detects, not who last launched via cowbell. Publish
+# on raise, adopt, picker refresh, plugin startup stamp, and herdr occupancy
+# hooks (`pane.agent_detected`, `pane.exited`). No interval thread; bt-reporter
+# stays a separate, disabled tool.
 # $glyph is a Lobe Icons Font plane-15 mark (hschne/lobe-icons-font). Ghostty
 # maps U+F4000-U+F47FF onto family "lobe-icons". No TTL: the plate paints this
-# token, and a 24h overlay made the badges vanish.
+# token, and a 24h overlay made the badges vanish. Occupancy events clear or
+# overwrite the overlay when the pane's agent changes.
 
 COWBELL_SOURCE = "cowbell"
 
@@ -2090,6 +2093,46 @@ def stamp_live_identities(snap: dict | None = None) -> int:
         if report_identity(pane_id, name, kind, model):
             n += 1
     return n
+
+
+def _plugin_json_env(name: str) -> dict:
+    raw = os.environ.get(name) or ""
+    if not raw.strip():
+        return {}
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def sync_identity_from_plugin_event(event: dict | None = None, context: dict | None = None) -> str:
+    """Restamp or clear one pane from a herdr plugin occupancy event.
+
+    Herdr puts the envelope in `HERDR_PLUGIN_EVENT_JSON` and the invocation
+    context in `HERDR_PLUGIN_CONTEXT_JSON`. `pane.exited` or
+    `pane.agent_detected` with `released` / no agent clears cowbell's overlay;
+    a new detector kind overwrites it. Returns stamped, cleared, or skipped.
+    """
+    event = _plugin_json_env("HERDR_PLUGIN_EVENT_JSON") if event is None else event
+    context = _plugin_json_env("HERDR_PLUGIN_CONTEXT_JSON") if context is None else context
+    if not isinstance(event, dict):
+        event = {}
+    if not isinstance(context, dict):
+        context = {}
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    name = str(event.get("event") or os.environ.get("HERDR_PLUGIN_EVENT") or "")
+    pane_id = str(data.get("pane_id") or "")
+    if not pane_id and name:
+        pane_id = str(context.get("focused_pane_id") or os.environ.get("HERDR_PANE_ID") or "")
+    if not name or not pane_id or pane_id.startswith("pid:"):
+        return "skipped"
+    released = bool(data.get("released"))
+    agent = str(data.get("agent") or "").strip()
+    if name == "pane.exited" or released or not agent:
+        return "cleared" if clear_identity(pane_id) else "skipped"
+    sitting = slug(str(context.get("tab_label") or "")) or pane_id
+    return "stamped" if report_identity(pane_id, sitting, agent, "") else "skipped"
 
 
 def identity_events(seen: dict, live_rows: list[dict]) -> list[dict]:
@@ -3823,13 +3866,17 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "identity":
         action = pos[0] if pos else ""
-        if action != "stamp":
-            print("cowbell identity stamp", file=sys.stderr)
-            print("  Publish $glyph for every live herdr agent pane (detector kind).", file=sys.stderr)
-            return 2
-        n = stamp_live_identities()
-        print(f"stamped {n} pane{'s' if n != 1 else ''}")
-        return 0
+        if action == "stamp":
+            n = stamp_live_identities()
+            print(f"stamped {n} pane{'s' if n != 1 else ''}")
+            return 0
+        if action == "sync":
+            print(sync_identity_from_plugin_event())
+            return 0
+        print("cowbell identity stamp|sync", file=sys.stderr)
+        print("  stamp  Publish $glyph for every live herdr agent pane (detector kind).", file=sys.stderr)
+        print("  sync   Restamp or clear one pane from HERDR_PLUGIN_EVENT_JSON.", file=sys.stderr)
+        return 2
     if harness_by_id(cat, cmd):
         cmd_dispatch(ctx, cat, cmd, bool(opts.get("yes"))); return 0
     raise SystemExit(f"cowbell: unknown command or harness {cmd!r} (see: cowbell catalog)")

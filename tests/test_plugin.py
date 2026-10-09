@@ -40,6 +40,7 @@ class Packaging(unittest.TestCase):
             [a["command"] for a in m["actions"]]
             + [p["command"] for p in m["panes"]]
             + [s["command"] for s in m.get("startup", [])]
+            + [e["command"] for e in m.get("events", [])]
         )
         self.assertTrue(commands)
         self.assertTrue(all(c[0] == "./bin/cowbell" for c in commands))
@@ -49,6 +50,13 @@ class Packaging(unittest.TestCase):
             [
                 {"command": ["./bin/cowbell", "keys", "ensure"]},
                 {"command": ["./bin/cowbell", "identity", "stamp"]},
+            ],
+        )
+        self.assertEqual(
+            [(e["on"], e["command"]) for e in m.get("events", [])],
+            [
+                ("pane.agent_detected", ["./bin/cowbell", "identity", "sync"]),
+                ("pane.exited", ["./bin/cowbell", "identity", "sync"]),
             ],
         )
         picker = next(p for p in m["panes"] if p["id"] == "picker")
