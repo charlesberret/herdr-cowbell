@@ -5,6 +5,8 @@
 # and that copy is the one to edit: add your own launchers, models, and presets.
 # The herdr plugin and the `cowbell` command read the same copy.
 # An agent that is not installed simply does not appear in the popup.
+# droid and devin: an existing copy that lacks those ids is filled once
+# from this seed when `which` finds the binary; a later delete stays.
 #
 # Each [[harness]] is one way of starting an agent: the executable (a herdr agent
 # kind, or a `command` wrapper), its models, and how it resumes a session.
@@ -118,7 +120,7 @@ resume = ["resume"]   # a subcommand, not a flag
 id = "grok"
 kind = "grok"
 title = "Grok CLI"
-models = []
+models = ["grok-4.6", "grok-4.7", "grok-4.7-build-fast", "grok-4.5"]
 model_flag = ["-m"]
 resume = ["--resume"]
 tools_allow_flag = "--allowedTools"
@@ -154,3 +156,17 @@ models = []
 model_flag = ["--model"]
 resume = ["--continue"]
 tools_allow_flag = "--tools"
+
+[[harness]]
+id = "devin"
+kind = "devin"
+title = "Devin"
+models = []
+resume = []
+
+[[harness]]
+id = "droid"
+kind = "droid"
+title = "Droid"
+models = []
+resume = []

@@ -214,7 +214,76 @@ def catalog_path() -> Path:
         seed = seed_path()
         if seed:
             shutil.copy2(seed, p)
+        return p
+    fill_missing_seed_kinds(p)
     return p
+
+
+# Seed ids spliced once into an existing house catalog when `which` finds them.
+# Not a PATH dump of AGENT_EXES; gemini/opencode omitted from a house copy stay omitted.
+SEED_FILL_IDS = ("droid", "devin")
+
+
+def seed_fill_marker_path() -> Path:
+    return state_dir() / "seed-fill.json"
+
+
+def _seed_fill_considered() -> set[str]:
+    p = seed_fill_marker_path()
+    if not p.is_file():
+        return set()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    ids = data.get("ids") if isinstance(data, dict) else None
+    return set(ids) if isinstance(ids, list) else set()
+
+
+def _seed_fill_record(ids: set[str]) -> None:
+    payload = json.dumps({"schema": 1, "ids": sorted(ids)}, indent=0) + "\n"
+    write_atomic(seed_fill_marker_path(), payload)
+
+
+def fill_missing_seed_kinds(path: Path) -> None:
+    """Once: splice SEED_FILL_IDS from the seed if installed(). Not on every picker tick after the marker is complete."""
+    if not path.is_file() or tomllib is None:
+        return
+    considered = _seed_fill_considered()
+    pending = [hid for hid in SEED_FILL_IDS if hid not in considered]
+    if not pending:
+        return
+    seed = seed_path()
+    if not seed or not seed.is_file():
+        return
+    try:
+        with open(seed, "rb") as fh:
+            seed_cat = tomllib.load(fh)
+        with open(path, "rb") as fh:
+            house = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return
+    by_id = {h["id"]: h for h in (seed_cat.get("harness") or []) if h.get("id")}
+    have = {h.get("id") for h in (house.get("harness") or [])}
+    now = set(considered)
+    for hid in pending:
+        rec = by_id.get(hid)
+        if rec is None:
+            continue
+        if hid in have:
+            now.add(hid)
+            continue
+        if installed(rec):
+            harness_insert({
+                "id": rec["id"],
+                "kind": rec.get("kind") or rec["id"],
+                "title": rec.get("title") or rec["id"],
+                "models": rec.get("models") or [],
+                "resume": rec.get("resume") or [],
+            }, path=path)
+        now.add(hid)
+    if now != considered:
+        _seed_fill_record(now)
 
 
 # --- context -------------------------------------------------------------------
@@ -3240,15 +3309,28 @@ def _lane_rows(cat: dict, h: dict) -> list[str]:
             for ln in LANES]
 
 
-def _ask_tools(h: dict) -> tuple[str, str]:
+def _ask_tools(h: dict, *, even_empty: bool = False) -> tuple[str, str]:
+    """Prompt for tools. Launch path (`e` / `n`) skips empty boxes; catalog edit does not."""
     allow, deny = harness_tools(h)
     if is_wrapper(h):
+        return "", ""
+    if not even_empty and not allow and not deny:
         return "", ""
     if h.get("tools_allow_flag"):
         allow = ask("  tools allow (empty skip): ", allow)
     if h.get("tools_deny_flag"):
         deny = ask("  tools deny (empty skip): ", deny)
     return allow, deny
+
+
+def model_menu_items(h: dict) -> list[str]:
+    """Model choices for this sitting. Empty means the harness has no model_flag."""
+    if not h.get("model_flag"):
+        return []
+    models = list(h.get("models") or [])
+    if models:
+        return models + ["(type another)"]
+    return ["(agent default)", "(type another)"]
 
 
 def edit_harness(cat: dict, hid: str) -> bool:
@@ -3275,7 +3357,7 @@ def edit_harness(cat: dict, hid: str) -> bool:
         if j is None:
             return False
         lane = LANES[j]
-    allow, deny = _ask_tools(h)
+    allow, deny = _ask_tools(h, even_empty=True)
     harness_set_field(hid, "title", title)
     harness_set_field(hid, "models", models)
     if lane:
@@ -3377,11 +3459,15 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
     head = f"{paint(name, INK, bold=True)}  {paint(h['id'], MUTED)}"
     model = ""
     models = list(h.get("models") or [])
-    if models:
-        j = choose("model", models + ["(type another)"], intro=head)
+    items = model_menu_items(h)
+    if items:
+        j = choose("model", items, intro=head)
         if j is None:
             return False
-        model = models[j] if j < len(models) else ask("  model id: ")
+        if models:
+            model = models[j] if j < len(models) else ask("  model id: ")
+        else:
+            model = "" if j == 0 else ask("  model id: ")
     lane = ""
     if not is_wrapper(h):
         default_lane = harness_lane(h, cat) or "yellow"
@@ -3410,9 +3496,9 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
 
 
 def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
-    """New Session `e`: set this sitting's model / permissions / tools from the harness defaults, then start.
+    """New Session `e`: set this sitting's name / model / permissions, then start.
 
-    Does not rewrite the catalog. Esc returns to the picker.
+    Does not rewrite the catalog. Esc returns to the picker. Empty tools boxes stay closed.
     """
     h = harness_by_id(cat, hid)
     if not h:
@@ -3426,9 +3512,8 @@ def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
     name = unique_name(slug(h["id"]), taken)
     intro = f"{paint('new tab in' if ctx.mode != 'here' else 'in this terminal ·', FAINT)} {paint(tilde(root), TEAL)}"
     print(f"  {paint(h['id'], INK, bold=True)}  {intro}")
-    has_settings = bool(h.get("models")) or not is_wrapper(h)
-    if not has_settings:
-        name = unique_name(slug(ask(f"  name [{name}]: ", name)), taken)
+    raw = ask(f"  name [{name}]: ", name)
+    name = unique_name(slug(raw) if (raw or "").strip() else name, taken)
     return raise_with_options(ctx, cat, h, root, v, name, save_as=False)
 
 
