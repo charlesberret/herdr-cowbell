@@ -1,3 +1,24 @@
 __pycache__/
 *.pyc
 .claude/
+
+
+# Local surface — not for a public tree
+.local/
+.inbox/
+.cursor/
+.grok/
+.aider*
+.env
+.env.*
+!.env.example
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+node_modules/
+.idea/
+*.swp
+Thumbs.db
