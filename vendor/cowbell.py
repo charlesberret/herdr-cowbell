@@ -15,7 +15,7 @@
   cowbell adopt [name] [--pane ID]  put a live sitting cowbell did not start on the roster
   cowbell list [--all]          roster rows (default: this directory)
   cowbell catalog               every harness: kind, egress, installed, trust badge
-  cowbell reconcile [--dry-run] rewrite a claimed pane border from the agent Herdr detects
+  cowbell reconcile [--dry-run] rewrite a pane border from the sitting and the agent Herdr detects
   cowbell identity stamp        publish $glyph for every live herdr agent pane (detector kind)
   cowbell identity sync         restamp or clear one pane from a herdr occupancy event
 
@@ -50,7 +50,7 @@ try:
 except ImportError:  # pragma: no cover
     tomllib = None
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 PLUGIN_ID = "herdr-cowbell"  # only to find config and state that 0.1–0.3 kept in herdr's plugin dirs
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 LANES = ("green", "yellow", "red")
@@ -692,7 +692,8 @@ def tab_labels(snap: dict) -> dict[str, str]:
 
 
 # A pane border may cache `sitting · harness`. The tab label is the sitting.
-# Herdr's detected agent is the harness. A border with no claim is not a cache.
+# Herdr's detected agent is the harness. A bare label that is not the sitting
+# is a stale sitting, not a claim to preserve.
 HARNESS_TOKEN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
@@ -716,23 +717,41 @@ def coherent_pane_label(sitting: str, harness: str) -> str:
 
 
 def reconcile_label(label, sitting, detected, idle_shell=False):
-    """The border a claimed pane should wear, or None when the claim should stay.
+    """The border the pane should wear, or None when it should stay.
 
-    A detected agent replaces the claimed harness. An idle shell with no agent
-    drops the claim back to the sitting. Anything else — including a wrapper
-    Herdr cannot see — keeps the claim it has.
+    A detected agent stamps `sitting · detected`. An idle shell with no agent
+    wears the sitting alone. A bare label that is not the current sitting is
+    stale and is rewritten. A person's one-off label that already equals the
+    sitting stays until detection upgrades it to `sitting · kind`. An empty
+    border is left alone (detection restamps it via mark_harness). A wrapper
+    Herdr cannot see keeps the claim it has.
     """
+    label = label or ""
+    bare = label.strip()
     claim = harness_claim(label)
-    if not claim:
-        return None
-    name, _tool = claim
-    sitting = (sitting or name).strip() or name
+    if claim:
+        name, _tool = claim
+        sitting = (sitting or name).strip() or name
+    else:
+        sitting = (sitting or "").strip()
     detected = (detected or "").strip()
     if detected:
         want = coherent_pane_label(sitting, detected)
-        return None if want == (label or "") else want
+        if not want:
+            return None
+        if claim or bare:
+            return None if want == bare else want
+        return None
     if idle_shell:
-        return None if sitting == (label or "") else sitting
+        if not sitting:
+            return None
+        if claim or (bare and bare != sitting):
+            return None if sitting == bare else sitting
+        return None
+    if claim:
+        return None
+    if bare and sitting and bare != sitting:
+        return sitting
     return None
 
 
@@ -1419,17 +1438,44 @@ def claim_argv(h: dict, sitting: str, agents_dir: Path | None = None) -> list[st
     return [flag, word]
 
 
+def _wrapper_catalog_argv(cat: dict, h: dict, model: str, lane: str, allow: str, deny: str) -> list[str]:
+    """Args a wrapper opted into. A launch-time model or lane the row did not set stays out.
+
+    The script still bakes its own flags. These are appended, and the agent takes the last one.
+    """
+    argv: list[str] = []
+    catalog_models = list(h.get("models") or [])
+    if model and h.get("model_flag") and (not catalog_models or model in catalog_models):
+        argv += list(h["model_flag"]) + [model]
+    if lane and lane == (h.get("lane") or ""):
+        lane_map = cat.get("lanes", {}).get(h.get("kind") or "", {})
+        if lane in lane_map:
+            argv += list(lane_map[lane])
+    if allow and h.get("tools_allow_flag") and allow == (h.get("tools_allow") or ""):
+        argv += [h["tools_allow_flag"], allow]
+    if deny and h.get("tools_deny_flag") and deny == (h.get("tools_deny") or ""):
+        argv += [h["tools_deny_flag"], deny]
+    return argv
+
+
 def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str = "", deny: str = "",
                seat: Path | None = None, resume_id: str = "", sitting: str = "",
                extra: list[str] | None = None, agents_dir: Path | None = None) -> list[str]:
     """Agent-side argv (after `--` for native kinds; after the wrapper for house wrappers)."""
     argv: list[str] = []
     if is_wrapper(h):
+        argv += _wrapper_catalog_argv(cat, h, model, lane, allow, deny)
         if resume_id:
             argv += list(h.get("resume") or ["--continue"])
         return argv + list(extra or [])
+    provider = h.get("provider")
+    if isinstance(provider, str) and provider and isinstance(h.get("provider_flag"), list) and h["provider_flag"]:
+        argv += list(h["provider_flag"]) + [provider]
     if model and h.get("model_flag"):
         argv += list(h["model_flag"]) + [model]
+    models = h.get("models") or []
+    if isinstance(h.get("cycle_flag"), list) and h["cycle_flag"] and models:
+        argv += list(h["cycle_flag"]) + [",".join(models)]
     lane_map = cat.get("lanes", {}).get(h["kind"], {})
     if lane and lane in lane_map:
         argv += list(lane_map[lane])
@@ -1439,6 +1485,9 @@ def build_argv(cat: dict, h: dict, model: str = "", lane: str = "", allow: str =
         argv += [h["tools_deny_flag"], deny]
     if seat and prompt_flag(h):
         argv += [prompt_flag(h), str(seat)]  # claude takes -file; pi's --append-system-prompt accepts a path
+    sys_prompt = h.get("system_prompt")
+    if isinstance(sys_prompt, str) and sys_prompt and prompt_flag(h):
+        argv += [prompt_flag(h), sys_prompt]
     argv += claim_argv(h, sitting, agents_dir=agents_dir)
     if resume_id:
         spec = list(h.get("resume") or [])
@@ -1928,9 +1977,17 @@ def project_workspace(root: str, ctx: Ctx) -> str | None:
     labelled = workspace_by_label(f"proj:{base}") if base else None
     if labelled:
         return labelled
+    panes = live_panes()
+    labels = {w.get("workspace_id"): w.get("label") or "" for w in workspaces()}
+    grouped = [p for p in panes
+               if p.get("cwd") and at_or_beneath(p["cwd"], root)
+               and labels.get(p.get("workspace_id") or "", "").startswith("proj:")]
+    if grouped:
+        grouped.sort(key=lambda p: 0 if os.path.realpath(p["cwd"]) == os.path.realpath(root) else 1)
+        return grouped[0]["workspace_id"]
     if ctx.workspace_id:
         return ctx.workspace_id
-    for p in live_panes():
+    for p in panes:
         if p.get("cwd") and at_or_beneath(p["cwd"], root) and p.get("workspace_id"):
             return p["workspace_id"]
     return None
@@ -2201,7 +2258,11 @@ def sync_identity_from_plugin_event(event: dict | None = None, context: dict | N
     if name == "pane.exited" or released or not agent:
         return "cleared" if clear_identity(pane_id) else "skipped"
     sitting = slug(str(context.get("tab_label") or "")) or pane_id
-    return "stamped" if report_identity(pane_id, sitting, agent, "") else "skipped"
+    ok = report_identity(pane_id, sitting, agent, "")
+    if ok:
+        mark_harness(pane_id, sitting, agent)
+        return "stamped"
+    return "skipped"
 
 
 def identity_events(seen: dict, live_rows: list[dict]) -> list[dict]:
@@ -2270,10 +2331,10 @@ def mark_harness(pane_id: str, sitting: str, harness: str) -> None:
 
 
 def coherence_rows() -> list[dict]:
-    """Claimed panes whose border disagrees with the sitting and the agent Herdr detects.
+    """Panes whose border disagrees with the sitting and the agent Herdr detects.
 
     The unscoped pane list omits the border label, so each workspace is listed on its own.
-    Panes that make no harness claim are left out.
+    An empty border is left out. A stale bare sitting is rewritten.
     """
     snap = snapshot()
     labels = tab_labels(snap)
@@ -3247,9 +3308,12 @@ def parse_model_list(raw: str) -> list[str]:
 
 
 def harness_lane(h: dict, cat: dict) -> str:
+    """A wrapper uses its script's own permissions unless this row sets `lane`."""
+    if h.get("lane"):
+        return h["lane"]
     if is_wrapper(h):
         return ""
-    return (h.get("lane") or cat.get("defaults", {}).get("lane", "yellow") or "")
+    return cat.get("defaults", {}).get("lane", "yellow") or ""
 
 
 def harness_tools(h: dict) -> tuple[str, str]:
@@ -3310,7 +3374,7 @@ def _lane_rows(cat: dict, h: dict) -> list[str]:
 
 
 def _ask_tools(h: dict, *, even_empty: bool = False) -> tuple[str, str]:
-    """Prompt for tools. Launch path (`e` / `n`) skips empty boxes; catalog edit does not."""
+    """Prompt for tools. The launch path skips empty boxes."""
     allow, deny = harness_tools(h)
     if is_wrapper(h):
         return "", ""
@@ -3333,41 +3397,177 @@ def model_menu_items(h: dict) -> list[str]:
     return ["(agent default)", "(type another)"]
 
 
-def edit_harness(cat: dict, hid: str) -> bool:
-    """Rewrite catalog fields for a harness. Esc writes nothing. Picker `e` is edit_sitting, not this."""
-    h = harness_by_id(cat, hid)
-    if not h:
-        print(f"  unknown harness {hid}"); return False
-    print(f"  {paint(hid, INK, bold=True)}  edit")
-    title = ask("  description: ", h.get("title") or "")
-    models = parse_model_list(ask("  models (comma-separated): ", ", ".join(h.get("models") or [])))
-    if models:
-        cur = (h.get("models") or [models[0]])[0]
-        di = models.index(cur) if cur in models else 0
-        j = choose("default model", models, default=di, intro=paint(hid, INK, bold=True))
+def _edit_row(label: str, value: str) -> str:
+    shown = value if value else "—"
+    return f"{paint(f'{label:<16}', SECONDARY)} {paint(shown, MUTED)}"
+
+
+def display_command(path: str) -> str:
+    """Show a launcher path with a tilde. The catalog keeps that form."""
+    path = path or ""
+    home = os.path.expanduser("~")
+    if home and (path == home or path.startswith(home + os.sep)):
+        return "~" + path[len(home):]
+    return path
+
+
+# A kind's flags, used when a row has not named them yet. Verified against the CLIs.
+_KIND_MODEL_FLAG = {"pi": ["--model"], "claude": ["--model"], "codex": ["--model"], "grok": ["-m"]}
+_KIND_TOOL_FLAGS = {
+    "pi": ("--tools", "--exclude-tools"),
+    "claude": ("--allowedTools", "--disallowedTools"),
+    "grok": ("--allowedTools", "--disallowed-tools"),
+}
+
+
+def harness_edit_rows(cat: dict, h: dict) -> list[tuple[str, str]]:
+    """Catalog fields `e` can change, in menu order. (key, rendered row).
+
+    Every harness gets the same controls. A launcher script also lists its command.
+    Empty models, permissions, and tools stay on the menu so they can be set.
+    """
+    models = list(h.get("models") or [])
+    rows = [("description", _edit_row("description", h.get("title") or ""))]
+    if is_wrapper(h):
+        rows.append(("command", _edit_row("command", display_command(h.get("command") or ""))))
+    rows += [
+        ("models", _edit_row("models", ", ".join(models))),
+        ("default", _edit_row("default model", models[0] if models else "")),
+        ("permissions", _edit_row("permissions", harness_lane(h, cat))),
+        ("allow", _edit_row("tools allow", h.get("tools_allow") or "")),
+        ("deny", _edit_row("tools deny", h.get("tools_deny") or "")),
+        ("provider", _edit_row("provider", h.get("provider") or "")),
+        ("cycle", _edit_row("model cycle", " ".join(h.get("cycle_flag") or []))),
+        ("prompt", _edit_row("system prompt", h.get("system_prompt") or "")),
+    ]
+    return rows
+
+
+def _ensure_model_flag(h: dict) -> None:
+    if h.get("model_flag"):
+        return
+    flag = _KIND_MODEL_FLAG.get(h.get("kind") or "")
+    if flag:
+        harness_set_field(h["id"], "model_flag", flag)
+
+
+def _ensure_tool_flag(h: dict, which: str) -> None:
+    key = "tools_allow_flag" if which == "allow" else "tools_deny_flag"
+    if h.get(key):
+        return
+    pair = _KIND_TOOL_FLAGS.get(h.get("kind") or "")
+    if not pair:
+        return
+    harness_set_field(h["id"], key, pair[0] if which == "allow" else pair[1])
+
+
+def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
+    """Write one catalog field. A cancelled choice writes nothing."""
+    hid = h["id"]
+    if key == "description":
+        harness_set_field(hid, "title", ask("  description: ", h.get("title") or ""))
+        return True
+    if key == "command":
+        raw = ask("  command: ", display_command(h.get("command") or ""))
+        if not (raw or "").strip():
+            return False
+        harness_set_field(hid, "command", display_command(os.path.expanduser(raw.strip())))
+        return True
+    if key == "models":
+        models = parse_model_list(ask("  models (comma-separated): ", ", ".join(h.get("models") or [])))
+        cur = (h.get("models") or [None])[0]
+        if cur and cur in models:
+            models = models_with_default(models, cur)
+        if models:
+            _ensure_model_flag(h)
+        harness_set_field(hid, "models", models)
+        return True
+    if key == "default":
+        models = list(h.get("models") or [])
+        if not models:
+            name = (ask("  default model: ", "") or "").strip()
+            if not name:
+                return False
+            _ensure_model_flag(h)
+            harness_set_field(hid, "models", [name])
+            return True
+        j = choose("default model", models, default=0, intro=paint(hid, INK, bold=True))
         if j is None:
             return False
-        models = models_with_default(models, models[j])
-    lane = h.get("lane") or ""
-    if not is_wrapper(h):
+        harness_set_field(hid, "models", models_with_default(models, models[j]))
+        return True
+    if key == "permissions":
         default_lane = harness_lane(h, cat) or "yellow"
         j = choose("default permissions", _lane_rows(cat, h),
                    default=LANES.index(default_lane) if default_lane in LANES else 1,
                    intro=paint(hid, INK, bold=True))
         if j is None:
             return False
-        lane = LANES[j]
-    allow, deny = _ask_tools(h, even_empty=True)
-    harness_set_field(hid, "title", title)
-    harness_set_field(hid, "models", models)
-    if lane:
-        harness_set_field(hid, "lane", lane)
-    if h.get("tools_allow_flag"):
-        harness_set_field(hid, "tools_allow", allow)
-    if h.get("tools_deny_flag"):
-        harness_set_field(hid, "tools_deny", deny)
-    print(f"  saved {hid}")
-    return True
+        harness_set_field(hid, "lane", LANES[j])
+        return True
+    if key == "allow":
+        cur = h.get("tools_allow") or ""
+        val = ask("  tools allow (empty skip): ", cur)
+        if val == cur:
+            return False
+        if val:
+            _ensure_tool_flag(h, "allow")
+        harness_set_field(hid, "tools_allow", val)
+        return True
+    if key == "deny":
+        cur = h.get("tools_deny") or ""
+        val = ask("  tools deny (empty skip): ", cur)
+        if val == cur:
+            return False
+        if val:
+            _ensure_tool_flag(h, "deny")
+        harness_set_field(hid, "tools_deny", val)
+        return True
+    if key == "provider":
+        val = (ask("  provider: ", h.get("provider") or "") or "").strip()
+        harness_set_field(hid, "provider", val)
+        if val and not h.get("provider_flag") and (h.get("kind") or "") == "pi":
+            harness_set_field(hid, "provider_flag", ["--provider"])
+        return True
+    if key == "cycle":
+        if (h.get("kind") or "") == "pi":
+            harness_set_field(hid, "cycle_flag", [] if h.get("cycle_flag") else ["--models"])
+            return True
+        raw = (ask("  cycle flag: ", " ".join(h.get("cycle_flag") or [])) or "").strip()
+        harness_set_field(hid, "cycle_flag", [raw] if raw else [])
+        return True
+    if key == "prompt":
+        val = (ask("  system prompt: ", h.get("system_prompt") or "") or "").strip()
+        harness_set_field(hid, "system_prompt", val)
+        if val and not h.get("system_prompt_flag") and (h.get("kind") or "") == "pi":
+            harness_set_field(hid, "system_prompt_flag", "--append-system-prompt")
+        return True
+    return False
+
+
+def edit_harness(cat: dict, hid: str) -> bool:
+    """Menu of catalog fields for one harness. Picker `e`.
+
+    Esc on the menu returns to the list. Esc inside a field cancels that field.
+    `cat` is unused; each pass reloads the catalog so the rows show what was just written.
+    """
+    del cat
+    wrote = False
+    while True:
+        fresh = load_catalog()
+        h = harness_by_id(fresh, hid)
+        if not h:
+            print(f"  unknown harness {hid}")
+            return wrote
+        spec = harness_edit_rows(fresh, h)
+        j = choose("edit", [row for _, row in spec], intro=f"{paint(hid, INK, bold=True)}  edit")
+        if j is None:
+            return wrote
+        try:
+            if _edit_harness_field(fresh, h, spec[j][0]):
+                wrote = True
+        except KeyboardInterrupt:
+            continue
 
 
 def add_harness(root: str, cat: dict) -> bool:
@@ -3782,7 +3982,8 @@ def picker(ctx: Ctx, cat: dict) -> int:
                     add_harness(root, full_cat)
                     done = False
                 elif raw == "e":
-                    done = edit_sitting(ctx, cat, hit["target"]["harness"], root)
+                    edit_harness(full_cat, hit["target"]["harness"])
+                    done = False
                 elif raw == "-":
                     remove_harness(hit["target"]["harness"])
                     done = False
@@ -3924,8 +4125,8 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "reconcile" and (opts.get("help") or opts.get("h")):
         print("cowbell reconcile [--dry-run]")
-        print("  Rewrite pane borders that claim a harness so they match the agent Herdr detects.")
-        print("  The tab label stays the sitting. A border with no harness claim is left alone.")
+        print("  Rewrite pane borders so they match the sitting and the agent Herdr detects.")
+        print("  The tab label stays the sitting. A bare border that is not the sitting is stale.")
         print("  With no herdr binary: 'herdr is not installed; nothing to reconcile'.")
         return 0
     ctx = choose_host(server_up())

@@ -1,6 +1,6 @@
 id = "herdr-cowbell"
 name = "cowbell"
-version = "0.3.1"
+version = "0.3.2"
 min_herdr_version = "0.9.0"
 description = "Pick an agent for this directory: one already running, one to resume, or a new one. Opens a popup picker; the chosen agent lands in a herdr tab. Same picker as the cowbell command."
 platforms = ["linux", "macos"]

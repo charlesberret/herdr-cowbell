@@ -70,7 +70,9 @@ ask_name = false     # true: Enter asks for a tab name before starting
 
 # Permissions presets ("lanes"): green = read / plan, yellow = edits allowed,
 # red = no prompts. Extra argv per agent kind. A kind with no table starts with
-# its own defaults. Wrappers (`command = ...`) bake permissions in and ignore this.
+# its own defaults. A wrapper (`command = ...`) keeps its script's model and
+# permissions until this row sets models, lane, or tools. Those are appended,
+# and the agent takes the last flag.
 [lanes.claude]
 green  = ["--permission-mode", "plan"]
 yellow = ["--permission-mode", "acceptEdits"]
