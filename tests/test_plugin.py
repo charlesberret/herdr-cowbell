@@ -3,6 +3,8 @@
 Core behaviour is tested in the cowbell tree; these tests only cover what this plugin adds.
 The vendored herdr raise is pinned here: a place with unix_user must pane-run agent-run.
 """
+import contextlib
+import io
 import json
 import os
 import pwd
@@ -445,3 +447,42 @@ class VendoredUnixConfine(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Doctor(unittest.TestCase):
+    """LAB-1376: the manifest's declared surface is checked against the live schema."""
+
+    @staticmethod
+    def _run(argv, **_):
+        if argv[1] == "status":
+            return subprocess.CompletedProcess(argv, 0, "server:\n  status: running\n  version: 0.9.1\n", "")
+        return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+    @staticmethod
+    def _schema(rename=None):
+        names = ["pane.agent_detected", "pane.exited", "popup", *hm.CTX_KEYS]
+        names = [rename.get(n, n) for n in names] if rename else names
+        return {"consts": names}
+
+    @staticmethod
+    def _snap():
+        return {"result": {"snapshot": {"agents": [{"display_agent": "\U000f4036"}]}}}
+
+    def _doctor(self, schema_doc=None):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), \
+             mock.patch.object(hm, "keys_claim_path", return_value=Path(hm.__file__)):
+            rc = hm.cmd_doctor(run=self._run, schema_doc=schema_doc or self._schema(),
+                               snapshot=self._snap())
+        return rc, buf.getvalue()
+
+    def test_green_on_a_faithful_schema(self):
+        rc, out = self._doctor()
+        self.assertEqual(rc, 0)
+        self.assertIn("pass  event pane.agent_detected", out)
+        self.assertNotIn("FAIL", out)
+
+    def test_a_renamed_event_fails_by_name(self):
+        rc, out = self._doctor(schema_doc=self._schema({"pane.agent_detected": "pane.agent_seen"}))
+        self.assertEqual(rc, 1)
+        self.assertIn("FAIL  event pane.agent_detected", out)

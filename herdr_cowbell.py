@@ -21,13 +21,14 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 VENDOR = HERE / "vendor"
 SELF_BIN = HERE / "bin" / "cowbell"
 PLUGIN_ID = "herdr-cowbell"
-PLUGIN_COMMANDS = {"open", "adopt", "stop", "import-seats", "keys"}
+PLUGIN_COMMANDS = {"open", "adopt", "stop", "import-seats", "keys", "doctor"}
 HERDR_CONFIG = Path("~/.config/herdr/config.toml").expanduser()
 SEATS_JSON = Path("~/.config/herdr/plugins/config/herdr-seats/seats.json").expanduser()
 CLAIM_FILE = "prefix-c.claimed"
@@ -343,6 +344,61 @@ def cmd_keys(action: str, path: Path = HERDR_CONFIG, *, claim: Path | None = Non
     print("run: herdr server reload-config")
 
 
+# --- doctor ----------------------------------------------------------------------
+
+def cmd_doctor(run=subprocess.run, schema_doc=None, snapshot=None) -> int:
+    """`cowbell doctor` (LAB-1376): every element herdr-plugin.toml declares — version,
+    events, startup hooks, pane placement, ctx env keys — answered by the live server.
+    Pass/fail per element; exit 1 naming misses. Never launches or alters anything."""
+    toml = tomllib.loads((Path(__file__).parent / "herdr-plugin.toml").read_text())
+    fails = []
+
+    def check(name: str, ok: bool) -> None:
+        print(f"{'pass' if ok else 'FAIL'}  {name}")
+        if not ok:
+            fails.append(name)
+
+    try:
+        st = run(["herdr", "status"], capture_output=True, text=True, timeout=10)
+        m = re.search(r"server:.*?version:\s*(\d+\.\d+\.\d+)", st.stdout or "", re.S)
+        ver = m.group(1) if m else ""
+    except (OSError, subprocess.TimeoutExpired):
+        ver = ""
+    need = toml.get("min_herdr_version") or "0.0.0"
+    check(f"server version {ver or 'unreachable'} >= {need}",
+          bool(ver) and parse_version(ver) >= parse_version(need))
+
+    if schema_doc is None:
+        try:
+            sj = run(["herdr", "api", "schema", "--json"], capture_output=True, text=True, timeout=10)
+            schema_doc = json.loads(sj.stdout or "{}")
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            schema_doc = {}
+    blob = json.dumps(schema_doc)
+    for ev in toml.get("events", []):
+        on = ev.get("on") or ""
+        check(f"event {on}", f'"{on}"' in blob)
+    for pane in toml.get("panes", []):
+        if pane.get("placement"):
+            check(f"placement {pane['placement']}", f'"{pane["placement"]}"' in blob)
+    for key in CTX_KEYS:
+        check(f"ctx env {key}", f'"{key}"' in blob)
+
+    hooks = toml.get("startup", [])
+    check(f"startup hooks declared ({len(hooks)})", len(hooks) >= 1)
+    check("startup keys.ensure answered (claim file)", keys_claim_path().exists())
+    if snapshot is None:
+        try:
+            sn = run(["herdr", "api", "snapshot"], capture_output=True, text=True, timeout=10)
+            snapshot = json.loads(sn.stdout or "{}")
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            snapshot = {}
+    agents = (snapshot.get("result") or {}).get("snapshot", {}).get("agents") or []
+    check("startup identity.stamp answered (a stamped glyph is live)",
+          any(a.get("display_agent") for a in agents))
+    return 1 if fails else 0
+
+
 # --- main ------------------------------------------------------------------------
 
 def plugin_main(argv: list[str]) -> int:
@@ -353,6 +409,8 @@ def plugin_main(argv: list[str]) -> int:
         cmd_keys(rest[0] if rest else "install"); return 0
     if cmd == "import-seats":
         print(f"imported {import_seats()} seats from herdr-seats"); return 0
+    if cmd == "doctor":
+        return cmd_doctor()
     if cmd == "adopt":
         exe = choose_core()
         if exe:
