@@ -77,13 +77,22 @@ def path_version(exe: str) -> tuple[int, ...] | None:
     return parse_version(out) if out.startswith("cowbell ") else None
 
 
-def choose_core(env=None) -> str | None:
-    """The PATH cowbell to exec when it is at least as new as the vendored core, else None."""
+# Occupancy commands write roster/state — a PATH cowbell at an equal version may be a
+# divergent copy; only a strictly newer PATH build takes them (LAB-1218).
+STRICT_PATH_CMDS = {"identity", "reconcile"}
+
+
+def choose_core(env=None, cmd: str = "") -> str | None:
+    """The PATH cowbell to exec when it is at least as new as the vendored core — strictly
+    newer for `identity`/`reconcile` — else None."""
     exe = path_cowbell(env)
     if not exe:
         return None
     v = path_version(exe)
-    return exe if v and v >= vendored_version() else None
+    if not v:
+        return None
+    vendored = vendored_version()
+    return exe if (v > vendored if cmd in STRICT_PATH_CMDS else v >= vendored) else None
 
 
 def core():
@@ -427,7 +436,7 @@ def plugin_main(argv: list[str]) -> int:
 def main(argv: list[str]) -> int:
     if argv and argv[0] in PLUGIN_COMMANDS:
         return plugin_main(argv)
-    exe = choose_core()
+    exe = choose_core(cmd=argv[0] if argv else "")
     if exe:
         os.execv(exe, [exe, *argv])
     return core().main(argv)

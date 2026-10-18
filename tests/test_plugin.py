@@ -135,6 +135,21 @@ class WhichCore(unittest.TestCase):
     def test_no_path_cowbell_runs_vendored(self):
         self.assertEqual(run_shim("--version", path="/usr/bin:/bin").stdout.strip(), f"cowbell {self.vendored}")
 
+    def test_equal_version_keeps_occupancy_commands_on_vendor(self):
+        """LAB-1218: at equal version, identity/reconcile stay vendored; readers still follow PATH."""
+        exe = fake_cowbell(self.base / "same", self.vendored)
+        env = {"PATH": f"{self.base / 'same'}:/usr/bin:/bin"}
+        for cmd in ("identity", "reconcile"):
+            self.assertIsNone(hm.choose_core(env, cmd), cmd)
+        self.assertEqual(hm.choose_core(env, "status"), str(exe))
+        self.assertEqual(hm.choose_core(env, "picker"), str(exe))
+
+    def test_strictly_newer_path_takes_occupancy_commands(self):
+        exe = fake_cowbell(self.base / "new", "99.0.0")
+        env = {"PATH": f"{self.base / 'new'}:/usr/bin:/bin"}
+        self.assertEqual(hm.choose_core(env, "identity"), str(exe))
+        self.assertEqual(hm.choose_core(env, "status"), str(exe))
+
     def test_the_shim_itself_on_path_is_not_a_core(self):
         out = run_shim("--version", path=f"{SHIM.parent}:/usr/bin:/bin")
         self.assertEqual(out.stdout.strip(), f"cowbell {self.vendored}")
