@@ -2,7 +2,7 @@
 
 Pick an agent for this directory: running here, resume, or start new.
 
-`herdr-cowbell` is a plugin for [herdr](https://github.com/herdrdev/herdr). The same picker runs outside herdr as the `cowbell` command.
+`herdr-cowbell` is a plugin for [herdr](https://github.com/herdrdev/herdr). It opens a popup picker for the directory you are in. The same picker runs outside herdr as the `cowbell` command, which lives in [cowbell-core](https://github.com/charlesberret/cowbell-core).
 
 ## Install
 
@@ -20,7 +20,7 @@ herdr server reload-config
 
 **`install-keys` takes over `prefix+c`**, which is herdr's own new-tab binding. It is a separate, opt-in step. It backs up `config.toml`, blanks the built-in binding, keeps the original as a comment, and appends one marked block. It also writes `~/.config/cowbell/prefix-c.claimed`. After that, a herdr server start reasserts the block if an upgrade rewrote `config.toml` and gave `prefix+c` back to the bare new-tab command. `uninstall-keys` restores the original binding and forgets the claim. Skip this if you would rather keep `prefix+c` as it is, and bind the `open` action yourself.
 
-**Requirements.** herdr 0.9.0 or newer, and python 3.11 or newer on your PATH. macOS ships `/usr/bin/python3` at 3.9, which is too old. `brew install python` or `uv python install 3.12` is enough. No other dependencies. The plugin is stdlib Python.
+**Requirements.** herdr 0.9.0 or newer, and python 3.11 or newer on your PATH. macOS ships `/usr/bin/python3` at 3.9, which is too old. `brew install python` or `uv python install 3.12` is enough. No other dependencies. The plugin is stdlib Python. It runs on macOS and Linux.
 
 If you have previously run `herdr plugin link` on a local copy, unlink it first. herdr refuses to install over a linked plugin.
 
@@ -46,9 +46,13 @@ The popup shows every coding agent already working in this directory, every one 
   ⏎ open   n new with options   g widen   esc close
 ```
 
+## Status
+
+Pre-1.0. The plugin is version 0.3.x and vendors a pinned copy of the cowbell command (see `vendor/`). Interfaces may still change between releases; changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
 ## What the three sections mean
 
-- **Active.** Agents herdr can see whose working directory is this one or below it. It is a census in a light-gray box. The rows are not numbered and cannot be chosen. Cowbell cannot take over a sitting that is already running.
+- **Active.** Agents herdr can see whose working directory is this one or below it. It is a census in a light-gray box. The rows are not numbered and cannot be chosen. Cowbell cannot take over a session that is already running.
 - **Resume.** Agents that ran here before and stopped. Gold heading. Choosing one restarts it with its previous session, where the agent supports that.
 - **New Session.** The agents you have configured, most-used-here first. Green heading. Enter starts one immediately with an automatic name. `n` asks for name, model and permissions first. Blue numbers mark the rows you can open.
 
@@ -80,7 +84,7 @@ Configuration lives in `~/.config/cowbell/`, and what has been started is rememb
 
 ## The `cowbell` command
 
-The picker is a standalone terminal program too, useful outside herdr or over ssh. Run `cowbell` from a shell. Inside herdr it opens a tab. Elsewhere it replaces the current shell with the agent you picked. The plugin ships a pinned copy, and if the `cowbell` on your PATH is the same version or newer, the plugin runs that one instead. Upgrading the command upgrades the popup. Both read the same configuration.
+The picker is a standalone terminal program too, useful outside herdr or over ssh. Run `cowbell` from a shell; install steps are in the [cowbell-core README](https://github.com/charlesberret/cowbell-core#install). Inside herdr it opens a tab. Elsewhere it replaces the current shell with the agent you picked. The plugin ships a pinned copy, and if the `cowbell` on your PATH is the same version or newer, the plugin runs that one instead. Upgrading the command upgrades the popup. Both read the same configuration.
 
 ## What it does not do
 
@@ -100,4 +104,4 @@ The plugin is a thin skin: `herdr-plugin.toml` declares the actions and the popu
 
 ## About
 
-Built by [Charles Berret](https://github.com/charlesberret) as a third-party plugin for herdr; not affiliated with or endorsed by the herdr project. MIT licensed.
+Built by [Charles Berret](https://github.com/charlesberret) as a third-party plugin for herdr; not affiliated with or endorsed by the herdr project. MIT licensed; see [LICENSE](LICENSE).
