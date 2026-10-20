@@ -2251,15 +2251,48 @@ def glyph_for(kind: str, model: str = "") -> str:
     return LOBE_GLYPH.get(kind or "", "·")
 
 
+# Titles the agent chrome writes. They are not a sitting.
+_GENERIC_TITLES = frozenset({
+    "", "claude", "claude code", "agy", "grok", "codex", "devin", "opencode", "pi", "cb",
+})
+
+
+def session_label(title: str, tab: str) -> str:
+    """The row names the sitting. The sitting is the tab.
+
+    A terminal title is the work in the pane (`- Stamp live glyphs…`,
+    `Suggest a Coding Improvement`, `Mint sysadmin… - Grok`). It is not a
+    rename of the sitting. Two harnesses in one sitting share that name;
+    `$glyph` tells them apart. An empty tab falls back to a short title
+    that is not chrome and not a sentence.
+    """
+    tab = (tab or "").strip()
+    if tab:
+        return tab
+    raw = (title or "").strip()
+    lower = raw.lower()
+    if lower.startswith("devin:"):
+        raw = raw.split(":", 1)[1].strip()
+        lower = raw.lower()
+    if not raw or lower.startswith(("functions.", "π", "-")):
+        return ""
+    head = raw.split(" - ")[0].strip()
+    if not head or head.lower() in _GENERIC_TITLES or " " in head:
+        return ""
+    return head
+
+
 def report_identity(pane_id: str, name: str, kind: str, model: str = "") -> bool:
-    """One event, one publish: $glyph (badge), $line1 (glyph + sitting), display_agent."""
+    """One event, one publish: $glyph (badge), $name (the sitting), $line1, display_agent."""
     if not pane_id or str(pane_id).startswith("pid:"):
         return False  # a process on another terminal has no herdr pane to badge
     g = glyph_for(kind, model)
     try:
         herdr("pane", "report-metadata", pane_id, "--source", COWBELL_SOURCE,
               "--display-agent", g,
-              "--token", f"glyph={g}", "--token", f"line1={g} {name}")
+              "--token", f"glyph={g}",
+              "--token", f"name={name}",
+              "--token", f"line1={g} {name}")
     except HerdrError:
         return False
     return True
@@ -2271,7 +2304,8 @@ def clear_identity(pane_id: str) -> bool:
         return False
     try:
         herdr("pane", "report-metadata", pane_id, "--source", COWBELL_SOURCE,
-              "--clear-display-agent", "--clear-token", "glyph", "--clear-token", "line1")
+              "--clear-display-agent",
+              "--clear-token", "glyph", "--clear-token", "name", "--clear-token", "line1")
     except HerdrError:
         return False
     return True
@@ -2288,12 +2322,20 @@ def stamp_live_identities(snap: dict | None = None) -> int:
         kind = str(a.get("agent") or "").strip()
         if not pane_id or pane_id.startswith("pid:") or not kind:
             continue
-        name = slug(labels.get(a.get("tab_id"), "") or "") or pane_id
+        tab = labels.get(a.get("tab_id"), "") or ""
+        name = session_label(str(a.get("terminal_title_stripped") or ""), tab) or pane_id
         tokens = a.get("tokens") or {}
         model = tokens.get("quota_model") or "" if isinstance(tokens, dict) else ""
         if report_identity(pane_id, name, kind, model):
             n += 1
     return n
+
+
+def _pane_agent(snap: dict, pane_id: str) -> dict | None:
+    for agent in snap.get("agents") or []:
+        if str(agent.get("pane_id") or "") == pane_id:
+            return agent if isinstance(agent, dict) else None
+    return None
 
 
 def _plugin_json_env(name: str) -> dict:
@@ -2330,14 +2372,43 @@ def sync_identity_from_plugin_event(event: dict | None = None, context: dict | N
         return "skipped"
     released = bool(data.get("released"))
     agent = str(data.get("agent") or "").strip()
-    if name == "pane.exited" or released or not agent:
+    if name == "pane.exited" or (name == "pane.agent_detected" and (released or not agent)):
         return "cleared" if clear_identity(pane_id) else "skipped"
-    sitting = slug(str(context.get("tab_label") or "")) or pane_id
-    ok = report_identity(pane_id, sitting, agent, "")
-    if ok:
-        mark_harness(pane_id, sitting, agent)
+    snap = snapshot()
+    live = _pane_agent(snap, pane_id)
+    if name == "pane.agent_status_changed":
+        if not live or not str(live.get("agent") or "").strip():
+            return "cleared" if clear_identity(pane_id) else "skipped"
+        agent = str(live.get("agent") or "").strip()
+    elif not agent and live:
+        agent = str(live.get("agent") or "").strip()
+    if not agent:
+        return "skipped"
+    tab = ""
+    title = ""
+    model = ""
+    current_glyph = ""
+    current_name = ""
+    if live:
+        labels = tab_labels(snap)
+        tab = labels.get(live.get("tab_id"), "") or ""
+        title = str(live.get("terminal_title_stripped") or "")
+        tokens = live.get("tokens") or {}
+        if isinstance(tokens, dict):
+            model = str(tokens.get("quota_model") or "")
+            current_glyph = str(tokens.get("glyph") or "")
+            current_name = str(tokens.get("name") or "")
+    if not tab:
+        tab = str(context.get("tab_label") or "")
+    row_name = session_label(title, tab) or pane_id
+    border = slug(tab) or row_name
+    if name == "pane.agent_status_changed" and current_glyph == glyph_for(agent, model) and current_name == row_name:
+        return "skipped"
+    ok = report_identity(pane_id, row_name, agent, model)
+    if ok and name != "pane.agent_status_changed":
+        mark_harness(pane_id, border, agent)
         return "stamped"
-    return "skipped"
+    return "stamped" if ok else "skipped"
 
 
 def identity_events(seen: dict, live_rows: list[dict]) -> list[dict]:

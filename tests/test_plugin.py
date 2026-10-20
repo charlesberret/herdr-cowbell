@@ -63,6 +63,7 @@ class Packaging(unittest.TestCase):
             [
                 ("pane.agent_detected", ["./bin/cowbell", "identity", "sync"]),
                 ("pane.exited", ["./bin/cowbell", "identity", "sync"]),
+                ("pane.agent_status_changed", ["./bin/cowbell", "identity", "sync"]),
             ],
         )
         picker = next(p for p in m["panes"] if p["id"] == "picker")
@@ -475,7 +476,7 @@ class Doctor(unittest.TestCase):
 
     @staticmethod
     def _schema(rename=None):
-        names = ["pane.agent_detected", "pane.exited", "popup", *hm.CTX_KEYS]
+        names = ["pane.agent_detected", "pane.exited", "pane.agent_status_changed", "popup", *hm.CTX_KEYS]
         names = [rename.get(n, n) for n in names] if rename else names
         return {"consts": names}
 

@@ -56,6 +56,12 @@ command = ["./bin/cowbell", "identity", "sync"]
 on = "pane.exited"
 command = ["./bin/cowbell", "identity", "sync"]
 
+# A long-lived pane can lose $glyph without another detect edge. Status
+# changes re-publish only when the mark or the row name is wrong.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["./bin/cowbell", "identity", "sync"]
+
 [[panes]]
 id = "picker"
 # Herdr draws the popup title against the inner left border and trims ordinary
