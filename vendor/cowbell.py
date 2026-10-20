@@ -655,6 +655,31 @@ def clear_pref(root: str, hid: str) -> None:
     _set_pref(root, hid, None)
 
 
+def rename_harness_refs(old: str, new: str) -> None:
+    """Point pins and roster rows at a renamed harness id. No-op when unchanged."""
+    if not old or not new or old == new:
+        return
+    data = load_pins()
+    dirs = data.get("dirs") or {}
+    changed = False
+    for entry in dirs.values():
+        if not isinstance(entry, dict) or old not in entry:
+            continue
+        kind = entry.pop(old)
+        entry.setdefault(new, kind)
+        changed = True
+    if changed:
+        save_pins(data)
+    rows = load_roster()
+    hit = False
+    for row in rows:
+        if row.get("harness") == old:
+            row["harness"] = new
+            hit = True
+    if hit:
+        save_roster(rows)
+
+
 def drop_harness_prefs(hid: str) -> None:
     """Strip pin/hide for a deleted harness in every directory. No-op when absent."""
     if not hid:
@@ -839,8 +864,15 @@ def session_title(v, limit: int = 60) -> str:
 
 
 def claude_store(root: str, home: Path | None = None) -> Path:
-    """Claude Code keys a project dir by the cwd with / and . flattened to -."""
-    base = (home or Path.home()) / ".claude" / "projects"
+    """Claude Code keys a project dir by the cwd with / and . flattened to -.
+
+    An explicit `home` (a launch-uid scan) wins; else $CLAUDE_CONFIG_DIR; else ~/.claude."""
+    if home is not None:
+        base = Path(home) / ".claude" / "projects"
+    elif os.environ.get("CLAUDE_CONFIG_DIR"):
+        base = Path(os.environ["CLAUDE_CONFIG_DIR"]).expanduser() / "projects"
+    else:
+        base = Path.home() / ".claude" / "projects"
     return base / re.sub(r"[/.]", "-", os.path.realpath(root))
 
 
@@ -1089,7 +1121,7 @@ def build_registry(cat: dict, root: str, agents: list[dict], panes: list[dict], 
     rows_here = roster_here(roster, root)
     by_pane: dict[str, dict] = {str(r["pane_id"]): r for r in rows_here if r.get("pane_id")}
     # identify an exe by catalog: a kind only one harness in this catalog has is that harness
-    # id; a kind several share (pi wrappers) stays the exe name. LAB-294.
+    # id; a kind several share (pi wrappers) stays the exe name.
     kind_id: dict[str, str] = {}
     for h in cat.get("harness", []):
         prev = kind_id.setdefault(h["kind"], h["id"])
@@ -1191,13 +1223,14 @@ def registry_json(reg: dict, place: dict | None = None) -> dict:
             "state": "new",
             "installed": bool(a.get("installed")),
             "trust": (a.get("trust") or {}).get("verdict") or "unknown",
+            "uid": a.get("uid") or reg.get("resolved_uid") or "",
         }
 
     return {
         "root": root,
         "place": place_name,
         "running": [sitting_row(r) for r in reg.get("live") or []],
-        # Resume only what can resume: a row without a session id would just start fresh (LAB-298).
+        # Resume only what can resume: a row without a session id would just start fresh.
         "resume": [sitting_row(r) for r in reg.get("cold") or [] if r.get("session_id")],
         "new": [new_row(a) for a in reg.get("absent") or []],
     }
@@ -1219,7 +1252,7 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
             out.append(f"  {key(idx)}  {paint(name, INK, bold=True)} {g} "
                        f"{status_cell(r['status'], 9)} {paint(rest, FAINT)}")
     if reg["cold"]:
-        # Resume only what can resume: a row without a session id would just start fresh (LAB-298).
+        # Resume only what can resume: a row without a session id would just start fresh.
         cold = [r for r in reg["cold"] if r.get("session_id")]
         if cold:
             out.append("")
@@ -1260,7 +1293,8 @@ def render_registry(reg: dict, git_top: str | None = None, wider: int | None = N
     return "\n".join(out)
 
 
-FOLD = 5  # a section longer than this shows FOLD-1 rows and a "+ N more" row
+FOLD = 5  # Active and Resume: longer than this shows FOLD-1 rows and a "+ N more" row
+START_FOLD = 10  # New Session rows before "+ N more" when the window height is unknown
 # Census first (not a menu), then the two menus chroma marks as openable.
 PICKER_SECTIONS = (("running", "Active", SECONDARY), ("resume", "Resume", GOLD), ("start", "New Session", GREEN))
 
@@ -1317,8 +1351,42 @@ def fold(rows: list[dict], section: str, expanded: set[str]) -> list[dict]:
                                "line": paint(f"+ {len(rows) - (FOLD - 1)} more", FAINT)}]
 
 
+def _folded_count(n: int) -> int:
+    """Rows Active or Resume actually occupy, including a '+ N more' line."""
+    if n <= 0:
+        return 0
+    return n if n <= FOLD else FOLD
+
+
+def start_row_limit(lines: int | None = None, running: int = 0, resume: int = 0) -> int:
+    """New Session rows to show before '+ N more'.
+
+    Unknown height shows 10. A known height shows as many as fit under the
+    path, the hint bar, and the Active and Resume blocks already on screen.
+    """
+    if not lines:
+        return START_FOLD
+    used = 6  # path, hint bar, New Session heading, blanks
+    if running:
+        used += 3 + _folded_count(running)  # blank and the census box rules
+    if resume:
+        used += 2 + _folded_count(resume)
+    return max(1, lines - used)
+
+
+def _with_more(rows: list[dict], section: str, expanded: set[str], show: int) -> list[dict]:
+    """Show `show` data rows, then '+ N more' when the section is longer."""
+    if section in expanded or len(rows) <= show:
+        return rows
+    hidden = len(rows) - show
+    return rows[:show] + [{"action": "more", "section": section, "key": f"more:{section}",
+                           "hidden": hidden,
+                           "line": paint(f"+ {hidden} more", FAINT)}]
+
+
 def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | None = None,
-                   ws_labels: dict[str, str] | None = None, expanded: set[str] | None = None) -> list[dict]:
+                   ws_labels: dict[str, str] | None = None, expanded: set[str] | None = None,
+                   lines: int | None = None) -> list[dict]:
     """Popup rows: active census, resume, start new. Only Resume and New Session are a menu."""
     expanded = expanded or set()
     ws_labels = ws_labels or {}
@@ -1348,7 +1416,8 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
             if a.get("installed") and a.get("trust", {}).get("verdict") != "blocked"}
     start = []
     ranked = rank_harnesses(list(pool), roster or [], reg["root"], default=reg.get("default_harness") or "")
-    shown = ranked if "start" in expanded or len(ranked) <= FOLD else ranked[:FOLD - 1]
+    start_limit = start_row_limit(lines, running=len(live), resume=len(cold))
+    shown = ranked if "start" in expanded or len(ranked) <= start_limit else ranked[:start_limit]
     title_w = min(34, max((len(pool[h].get("title") or "") for h in shown), default=0))
     for hid in ranked:
         a = pool[hid]
@@ -1360,7 +1429,9 @@ def picker_choices(reg: dict, roster: list[dict] | None = None, here_ws: str | N
                               + paint(f"{a.get('title') or '':<{title_w}}" if warn else a.get("title") or "", MUTED) + warn})
     out = []
     for section, rows in (("running", live), ("resume", resume), ("start", start)):
-        out += [dict(c, section=section) for c in fold(rows, section, expanded)]
+        folded = (_with_more(rows, section, expanded, start_limit) if section == "start"
+                  else fold(rows, section, expanded))
+        out += [dict(c, section=section) for c in folded]
     return out
 
 
@@ -2084,14 +2155,18 @@ def start_native(name: str, kind: str, pane_id: str, argv: list[str]) -> dict:
 
 def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", lane="", allow="", deny="",
                   seat: Path | None = None, resume_id: str = "", extra: list[str] | None = None,
-                  focus: bool = True, pen: bool = False, split: bool = False) -> dict:
+                  focus: bool = True, pen: bool = False, split: bool = False,
+                  reuse_pane: dict | None = None) -> dict:
     argv = build_argv(cat, h, model, lane, allow, deny, seat, resume_id, sitting=name, extra=extra)
     place = place_for(cat, root)
     base = ([h["command"], *argv] if is_wrapper(h) else [h["kind"], *argv])
     confined = unix_confine(cat, root, base)
     # --pen is a new machine-list line (the place's workspace_label).
     # Otherwise create a tab in the project workspace that already exists (proj:<dir>).
-    if pen and place and place.get("workspace_label"):
+    # reuse_pane resumes into a pane that is still present — never a new tab.
+    if reuse_pane:
+        pane = reuse_pane
+    elif pen and place and place.get("workspace_label"):
         pane = create_tab(workspace_by_label(place["workspace_label"]), root, name, place["workspace_label"])
     else:
         wid = project_workspace(root, ctx)
@@ -2104,14 +2179,14 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
     pid = pane["pane_id"]
     launched_session = ""
     try:
-        if confined != base or is_wrapper(h):
+        if reuse_pane or confined != base or is_wrapper(h):
             wait_shell(pid)
             herdr("pane", "run", pid, shell_join(confined), expect_json=False)
         else:
             res = start_native(name, h["kind"], pid, argv)
             launched_session = ((res.get("agent") or {}).get("agent_session") or {}).get("value") or ""
     except HerdrError:
-        if pane.get("tab_id"):  # do not leave an empty tab behind a failed launch
+        if pane.get("tab_id") and not reuse_pane:  # do not leave an empty tab behind a failed launch
             try:
                 herdr("tab", "close", pane["tab_id"])
             except HerdrError:
@@ -2125,7 +2200,7 @@ def raise_harness(cat: dict, h: dict, name: str, root: str, ctx: Ctx, model="", 
         "workspace_id": pane.get("workspace_id"), "created": now(), "argv": argv,
     })
     save_roster(rows)
-    report_identity(pid, name, h["kind"], model)   # one publish per raise (LAB-297)
+    report_identity(pid, name, h["kind"], model)   # one publish per raise
     # Tab stays the sitting. The pane border caches the harness just launched;
     # `cowbell reconcile` rewrites it from the agent Herdr detects.
     mark_harness(pid, name, h["id"])
@@ -2141,7 +2216,7 @@ def focus_agent(pane_id: str) -> None:
     herdr("agent", "focus", pane_id)
 
 
-# herdr sidebar tokens (event-driven; never a loop) — LAB-297.
+# herdr sidebar tokens (event-driven; never a loop).
 # Kind is the occupant herdr detects, not who last launched via cowbell. Publish
 # on raise, adopt, picker refresh, plugin startup stamp, and herdr occupancy
 # hooks (`pane.agent_detected`, `pane.exited`). No interval thread; bt-reporter
@@ -2392,12 +2467,16 @@ def cmd_registry(ctx: Ctx, cat: dict, root: str | None = None, as_json: bool = F
             raise SystemExit(f"cowbell: no place {place_name!r} in {catalog_path()} (have: {', '.join(places(cat)) or 'none'})")
         root = pl["cwd"]
     root, place, remapped = resolve_root(cat, root or ctx.cwd)
+    uid = ((place or {}).get("unix_user") or (cat.get("defaults") or {}).get("unix_user") or "").strip()
     cat = scoped_catalog(cat, place)
     rows = load_roster()
     ctx.live.refresh_sessions(rows)
     agents, panes = ctx.live.agents(), ctx.live.panes()
     reg = build_registry(cat, root, agents, panes, rows, subject=trust_subject(root),
                          tab_label=tab_labels(ctx.live.snapshot()), history=launch_history(cat, root))
+    reg["resolved_uid"] = uid  # the uid a `new` row would launch as ("" = no drop)
+    for a in reg.get("absent") or []:
+        a["uid"] = uid
     if place:
         reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
     if as_json:
@@ -2459,6 +2538,14 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
         raise SystemExit(f"cowbell: {r['name']} uses harness {hid!r} which may not resume in {where}")
     cat = scoped
     seat = Path(r["seat"]) if r.get("seat") and Path(r["seat"]).is_file() else None
+    # a still-present pane takes the resume in place; a torn-down one gets a new tab.
+    pane_row = next((p for p in ctx.live.panes() if p.get("pane_id") == r.get("pane_id")), None)
+    if pane_row and getattr(ctx.live, "herdr", False):
+        pane = raise_harness(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx,
+                             r.get("model", ""), r.get("lane", ""), r.get("allow", ""), r.get("deny", ""),
+                             seat, resume_id=r.get("session_id", ""), reuse_pane=pane_row, focus=False)
+        print(f"resumed {r['name']} ({h['id']}) in {pane_row['pane_id']}")
+        return
     pane = launch(cat, h, r["name"], r.get("cwd") or root or ctx.cwd, ctx, r.get("model", ""), r.get("lane", ""),
                   r.get("allow", ""), r.get("deny", ""), seat, resume_id=r.get("session_id", ""))
     pid = (pane or {}).get("pane_id") or ""
@@ -2607,7 +2694,7 @@ def cmd_adopt(ctx: Ctx, cat: dict, name: str | None = None, pane_id: str | None 
     save_roster(rows)
     apane = str(a.get("pane_id") or "")
     if apane and not apane.startswith("pid:"):
-        report_identity(apane, nm, kind)   # one publish per adopt (LAB-297)
+        report_identity(apane, nm, kind)   # one publish per adopt
     print(f"adopted {nm}  {kind}  {tilde(cwd)}")
     return row
 
@@ -2698,6 +2785,89 @@ def cmd_catalog(cat: dict) -> None:
               f"{'yes' if installed(h) else 'no':<9} {trust_badge(h['trust_tool']):<10} {h.get('title', '')}")
 
 
+KIND_PROBE = {  # argv that prints usage without launching a session
+    "claude": ["--help"], "codex": ["--help"], "grok": ["--help"], "gemini": ["--help"],
+    "agy": ["--help"], "opencode": ["--help"], "pi": ["--help"], "devin": ["--help"],
+    "droid": ["--help"], "aider": ["--help"], "bash": ["--help"], "lab": ["--help"],
+}
+
+
+def declared_flags(h: dict) -> list[str]:
+    """Every argv token the catalog declares for this harness — `*_flag` fields plus `resume`
+    (which can be a subcommand, e.g. `codex resume`; it is still probed by name)."""
+    out = []
+    for k, v in h.items():
+        if k == "resume" or k.endswith("_flag"):
+            out += [v] if isinstance(v, str) else list(v or [])
+    return [a for a in out if isinstance(a, str) and a]
+
+
+def flag_probe(h: dict, run=subprocess.run) -> list | None:
+    """Declared args the installed CLI's help does not mention. `None` = the probe could
+    not run (absent binary, timeout) — unchecked, not a failure. Never launches a session."""
+    exe = h.get("command") if is_wrapper(h) else h.get("kind")
+    if not exe:
+        return None
+    argv = [exe] + KIND_PROBE.get(h.get("kind"), ["--help"])
+    if len(argv) < 2:
+        return None
+    try:
+        proc = run(argv, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    help_text = (proc.stdout or "") + (proc.stderr or "")
+    return [a for a in declared_flags(h) if a not in help_text]
+
+
+def cmd_catalog_check(cat: dict) -> int:
+    """`cowbell catalog --check`: reject a malformed row by name, and probe
+    each installed harness's help for its declared flags. A help miss is a `warn` (help
+    docs lag real argv — codex `-m` vs `--model` is the shape), not a failure.
+    Not-installed or unprobeable harnesses are reported, not failed."""
+    problems, warns, unchecked = [], [], []
+    ids = set()
+    for h in cat.get("harness", []):
+        hid = h.get("id") or "(missing id)"
+        if not h.get("id"):
+            problems.append("harness row with no id")
+        elif hid in ids:
+            problems.append(f"harness {hid}: duplicate id")
+        ids.add(hid)
+        if not h.get("kind"):
+            problems.append(f"harness {hid}: missing kind")
+        if h.get("egress") and h["egress"] not in GLYPH:
+            problems.append(f"harness {hid}: unknown egress {h['egress']!r}")
+        if h.get("lane") and h["lane"] not in ("green", "yellow", "red"):
+            problems.append(f"harness {hid}: unknown lane {h['lane']!r}")
+        if "models" in h and not isinstance(h["models"], list):
+            problems.append(f"harness {hid}: models must be a list")
+        if not installed(h):
+            unchecked.append(hid)
+            continue
+        missing = flag_probe(h)
+        if missing is None:
+            unchecked.append(hid)  # probe could not run
+        elif missing:
+            warns.append(f"harness {hid}: {', '.join(missing)} not in {h.get('kind')} help")
+    for name, pl in (cat.get("places") or {}).items():
+        for hid in pl.get("allow_harness") or []:
+            if hid not in ids:
+                problems.append(f"place {name}: allow_harness names unknown harness {hid!r}")
+        dh = pl.get("default_harness")
+        if dh and dh not in ids:
+            problems.append(f"place {name}: default_harness names unknown harness {dh!r}")
+    for p in problems:
+        print(f"  FAIL {p}")
+    for w in warns:
+        print(f"  warn {w}")
+    for hid in unchecked:
+        print(f"  skip {hid}: not installed")
+    if problems:
+        return 1
+    print(f"  ok: {len(ids)} harnesses, {len(cat.get('places') or {})} places")
+    return 0
+
+
 # --- files -------------------------------------------------------------------
 
 def write_atomic(path: Path, text: str) -> None:
@@ -2719,7 +2889,7 @@ def write_atomic(path: Path, text: str) -> None:
         raise
 
 
-# --- catalog writer (LAB-254) ------------------------------------------------
+# --- catalog writer ------------------------------------------------
 # Splice [[harness]] blocks as text so comments and neighbouring tables stay.
 # Block = [[harness]] through the next [[…]] / […] / EOF. tomllib only reads.
 
@@ -2883,6 +3053,22 @@ def _backup_timestamped(path: Path) -> Path:
     return backup
 
 
+def _snapshot_catalog(path: Path) -> None:
+    """A second home for the written catalog: ~/.config is not synced."""
+    try:
+        d = state_dir() / "catalog"
+        d.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = d / f"{path.name}.{stamp}"
+        n = 2
+        while out.exists():
+            out = d / f"{path.name}.{stamp}.{n}"
+            n += 1
+        shutil.copy2(path, out)
+    except OSError:
+        pass
+
+
 def _commit_catalog(path: Path, new_text: str) -> None:
     path = Path(path)
     if not path.is_file():
@@ -2893,6 +3079,9 @@ def _commit_catalog(path: Path, new_text: str) -> None:
         return
     _backup_timestamped(path)
     write_atomic(path, new_text)
+    # NB: catalog_path() fills missing seed rows (it writes), so compare against config_dir instead.
+    if os.path.realpath(path) == os.path.realpath(config_dir() / "harnesses.toml"):
+        _snapshot_catalog(path)
 
 
 def _catalog_text(path: Path | None) -> tuple[Path, str]:
@@ -2971,6 +3160,52 @@ def _set_key_in_block(block: str, key: str, value) -> str:
             last_assign = i
     lines.insert(last_assign + 1, f"{key} = {dumped}\n")
     return "".join(lines)
+
+
+def place_blocks(text: str) -> list[dict]:
+    """Each `[places.*]` span: start, end (end exclusive), text."""
+    lines = text.splitlines(keepends=True)
+    spans, i, pos, n = [], 0, 0, len(lines)
+    while i < n:
+        hdr = _table_header(lines[i])
+        if hdr and hdr.startswith("[places."):
+            start = pos
+            endpos = pos + len(lines[i])
+            j = i + 1
+            while j < n:
+                if _table_header(lines[j]) is not None:
+                    break
+                endpos += len(lines[j])
+                j += 1
+            spans.append({"start": start, "end": endpos, "text": text[start:endpos]})
+            pos, i = endpos, j
+            continue
+        pos += len(lines[i])
+        i += 1
+    return spans
+
+
+def _rename_place_ids(old: str, new: str, path: Path | None = None) -> None:
+    """Rewrite allow_harness and default_harness that name `old`. Comments stay."""
+    p, text = _catalog_text(path)
+    for span in reversed(place_blocks(text)):
+        try:
+            parsed = tomllib.loads(span["text"])
+        except tomllib.TOMLDecodeError:
+            continue
+        places = parsed.get("places") or {}
+        if not places:
+            continue
+        pl = next(iter(places.values()))
+        block = span["text"]
+        allow = list(pl.get("allow_harness") or [])
+        if old in allow:
+            block = _set_key_in_block(block, "allow_harness", [new if x == old else x for x in allow])
+        if pl.get("default_harness") == old:
+            block = _set_key_in_block(block, "default_harness", new)
+        if block != span["text"]:
+            text = text[:span["start"]] + block + text[span["end"]:]
+    _commit_catalog(p, text)
 
 
 def harness_set_field(hid: str, key: str, value, path: Path | None = None) -> None:
@@ -3129,6 +3364,9 @@ def hint_bar(hints: list[tuple[str, str, str]]) -> tuple[str, list[tuple[int, in
     return "  " + "   ".join(parts), spans
 
 
+_MENU_PENDING: list = []  # events after a terminating key, saved for the next menu() call
+
+
 def menu(body: list[str], rows: list[int], hints, selected: int = 0,
          hotkeys: str = "", flash: str = "", line_keys: dict[int, str] | None = None,
          numbered: list[int] | None = None, scr: Screen | None = None, tick: float | None = None) -> tuple:
@@ -3168,10 +3406,17 @@ def menu(body: list[str], rows: list[int], hints, selected: int = 0,
             shown += [""] * (view - len(shown))
             bar_y = view + 2  # 1-based screen row of the hint bar
             scr.draw(shown + foot)
-            evs = scr.events(tick)
+            # fast-typed keys arrive batched; leftovers carry to the next menu() call
+            evs = _MENU_PENDING if _MENU_PENDING else scr.events(tick)
+            _MENU_PENDING.clear()
             if tick is not None and not evs:
                 return ("tick", selected)
-            for ev in evs:
+
+            def done(res):
+                _MENU_PENDING.extend(evs[i + 1:])
+                return res
+
+            for i, ev in enumerate(evs):
                 if ev[0] == "mouse":
                     _, code, x, y, down = ev
                     line = top + y - 1
@@ -3182,24 +3427,24 @@ def menu(body: list[str], rows: list[int], hints, selected: int = 0,
                             hit = next((e for x0, x1, e in spans if x0 <= x < x1), None)
                             if hit:
                                 if hit == "esc":
-                                    return ("cancel",)
+                                    return done(("cancel",))
                                 if hit == "enter":
                                     if rows:
-                                        return ("pick", selected)
+                                        return done(("pick", selected))
                                     continue
-                                return ("key", hit, selected)
+                                return done(("key", hit, selected))
                         elif line in (line_keys or {}) and y <= view:
-                            return ("key", line_keys[line], selected)
+                            return done(("key", line_keys[line], selected))
                         elif line in by_line and y <= view:
                             selected = by_line[line]
                     continue
                 kind, val = ev
                 if kind == "key":
                     if val == "esc":
-                        return ("cancel",)
+                        return done(("cancel",))
                     if val == "enter":
                         if rows:
-                            return ("pick", selected)
+                            return done(("pick", selected))
                         continue
                     step = {"up": -1, "down": 1, "backtab": -1, "tab": 1, "pgup": -view, "pgdn": view}.get(val)
                     if step:
@@ -3220,13 +3465,13 @@ def menu(body: list[str], rows: list[int], hints, selected: int = 0,
                     if n:
                         selected = numbered[n - 1]
                         if n * 10 > len(numbered):
-                            return ("pick", selected)
+                            return done(("pick", selected))
                 elif val in ("j", "k"):
                     selected = max(0, min(len(rows) - 1, selected + (1 if val == "j" else -1)))
                 elif val == "q":
-                    return ("cancel",)
+                    return done(("cancel",))
                 elif val.lower() in hotkeys:
-                    return ("key", val.lower(), selected)
+                    return done(("key", val.lower(), selected))
     finally:
         if own:
             scr.close()
@@ -3388,12 +3633,13 @@ def _ask_tools(h: dict, *, even_empty: bool = False) -> tuple[str, str]:
 
 
 def model_menu_items(h: dict) -> list[str]:
-    """Model choices for this sitting. Empty means the harness has no model_flag."""
+    """Model choices for this sitting. Empty means the harness has no model_flag.
+    A long list gives the first ten; "(type another)" takes the rest by hand."""
     if not h.get("model_flag"):
         return []
     models = list(h.get("models") or [])
     if models:
-        return models + ["(type another)"]
+        return models[:10] + ["(type another)"]
     return ["(agent default)", "(type another)"]
 
 
@@ -3418,6 +3664,44 @@ _KIND_TOOL_FLAGS = {
     "claude": ("--allowedTools", "--disallowedTools"),
     "grok": ("--allowedTools", "--disallowed-tools"),
 }
+# Selectable values for fields that used to be a blank line. "(none)" clears.
+# Model ids match the seed. Claude and pi tool names match those CLIs' own docs
+# and the seed lanes. Kinds without a list still get none and type-another.
+_NONE = "(none)"
+_TYPE = "(type another)"
+_KIND_MODELS = {
+    "claude": ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"],
+    "grok": ["grok-4.6", "grok-4.7", "grok-4.7-build-fast", "grok-4.5"],
+}
+_PROVIDERS = ["ollama", "openai", "anthropic", "google", "xai", "openrouter"]
+_KIND_ALLOW = {
+    "claude": ["Read", "Read,Grep,Glob", "Read,Edit,Grep,Glob", "Read,Edit,Write,Bash,Grep,Glob"],
+    "pi": ["read", "read,edit,write"],
+}
+_KIND_DENY = {
+    "claude": ["Bash", "WebFetch,WebSearch", "Bash,WebFetch,WebSearch"],
+    "pi": ["bash"],
+}
+
+
+def _preset_choice(title: str, presets: list[str], current: str, intro: str = "") -> str | None:
+    """Pick a known value, clear it, or type one. None means the choice was cancelled."""
+    options = list(dict.fromkeys(x for x in presets if x))
+    items = options + [_NONE, _TYPE]
+    if current and current in options:
+        default = options.index(current)
+    elif not current:
+        default = len(options)
+    else:
+        default = len(items) - 1
+    j = choose(title, items, default=default, intro=intro)
+    if j is None:
+        return None
+    if items[j] == _NONE:
+        return ""
+    if items[j] == _TYPE:
+        return ask(f"  {title}: ", current)
+    return options[j]
 
 
 def harness_edit_rows(cat: dict, h: dict) -> list[tuple[str, str]]:
@@ -3427,7 +3711,10 @@ def harness_edit_rows(cat: dict, h: dict) -> list[tuple[str, str]]:
     Empty models, permissions, and tools stay on the menu so they can be set.
     """
     models = list(h.get("models") or [])
-    rows = [("description", _edit_row("description", h.get("title") or ""))]
+    rows = [
+        ("name", _edit_row("name", h.get("id") or "")),
+        ("description", _edit_row("description", h.get("title") or "")),
+    ]
     if is_wrapper(h):
         rows.append(("command", _edit_row("command", display_command(h.get("command") or ""))))
     rows += [
@@ -3461,9 +3748,24 @@ def _ensure_tool_flag(h: dict, which: str) -> None:
     harness_set_field(h["id"], key, pair[0] if which == "allow" else pair[1])
 
 
+def _rename_harness(old: str) -> str | None:
+    """Edit the harness id. Esc or an unchanged name writes nothing. Returns the new id."""
+    raw = ask("  name: ", old)
+    if not (raw or "").strip():
+        return None
+    new = slug(raw)
+    if new == old:
+        return None
+    harness_set_field(old, "id", new)
+    rename_harness_refs(old, new)
+    _rename_place_ids(old, new)
+    return new
+
+
 def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
     """Write one catalog field. A cancelled choice writes nothing."""
     hid = h["id"]
+    intro = paint(hid, INK, bold=True)
     if key == "description":
         harness_set_field(hid, "title", ask("  description: ", h.get("title") or ""))
         return True
@@ -3474,7 +3776,20 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         harness_set_field(hid, "command", display_command(os.path.expanduser(raw.strip())))
         return True
     if key == "models":
-        models = parse_model_list(ask("  models (comma-separated): ", ", ".join(h.get("models") or [])))
+        current = ", ".join(h.get("models") or [])
+        presets = list(_KIND_MODELS.get(h.get("kind") or "", []))
+        for model in h.get("models") or []:
+            if model not in presets:
+                presets.append(model)
+        picked = _preset_choice("models", presets, current, intro=intro)
+        if picked is None or picked == current:
+            return False
+        if not picked:
+            models = []
+        elif picked in presets:
+            models = [picked]
+        else:
+            models = parse_model_list(picked)
         cur = (h.get("models") or [None])[0]
         if cur and cur in models:
             models = models_with_default(models, cur)
@@ -3484,17 +3799,23 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         return True
     if key == "default":
         models = list(h.get("models") or [])
-        if not models:
+        presets = models or list(_KIND_MODELS.get(h.get("kind") or "", []))
+        if not presets:
             name = (ask("  default model: ", "") or "").strip()
             if not name:
                 return False
             _ensure_model_flag(h)
             harness_set_field(hid, "models", [name])
             return True
-        j = choose("default model", models, default=0, intro=paint(hid, INK, bold=True))
-        if j is None:
+        picked = _preset_choice("default model", presets, models[0] if models else "", intro=intro)
+        if picked is None or not picked:
             return False
-        harness_set_field(hid, "models", models_with_default(models, models[j]))
+        if picked not in presets:
+            models = models_with_default(models, picked) if models else [picked]
+        else:
+            models = models_with_default(models or presets, picked)
+        _ensure_model_flag(h)
+        harness_set_field(hid, "models", models)
         return True
     if key == "permissions":
         default_lane = harness_lane(h, cat) or "yellow"
@@ -3507,8 +3828,8 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         return True
     if key == "allow":
         cur = h.get("tools_allow") or ""
-        val = ask("  tools allow (empty skip): ", cur)
-        if val == cur:
+        val = _preset_choice("tools allow", list(_KIND_ALLOW.get(h.get("kind") or "", [])), cur, intro=intro)
+        if val is None or val == cur:
             return False
         if val:
             _ensure_tool_flag(h, "allow")
@@ -3516,15 +3837,18 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         return True
     if key == "deny":
         cur = h.get("tools_deny") or ""
-        val = ask("  tools deny (empty skip): ", cur)
-        if val == cur:
+        val = _preset_choice("tools deny", list(_KIND_DENY.get(h.get("kind") or "", [])), cur, intro=intro)
+        if val is None or val == cur:
             return False
         if val:
             _ensure_tool_flag(h, "deny")
         harness_set_field(hid, "tools_deny", val)
         return True
     if key == "provider":
-        val = (ask("  provider: ", h.get("provider") or "") or "").strip()
+        cur = h.get("provider") or ""
+        val = _preset_choice("provider", _PROVIDERS, cur, intro=intro)
+        if val is None or val == cur:
+            return False
         harness_set_field(hid, "provider", val)
         if val and not h.get("provider_flag") and (h.get("kind") or "") == "pi":
             harness_set_field(hid, "provider_flag", ["--provider"])
@@ -3533,11 +3857,17 @@ def _edit_harness_field(cat: dict, h: dict, key: str) -> bool:
         if (h.get("kind") or "") == "pi":
             harness_set_field(hid, "cycle_flag", [] if h.get("cycle_flag") else ["--models"])
             return True
-        raw = (ask("  cycle flag: ", " ".join(h.get("cycle_flag") or [])) or "").strip()
-        harness_set_field(hid, "cycle_flag", [raw] if raw else [])
+        cur = " ".join(h.get("cycle_flag") or [])
+        val = _preset_choice("model cycle", ["--models"], cur, intro=intro)
+        if val is None or val == cur:
+            return False
+        harness_set_field(hid, "cycle_flag", [val] if val else [])
         return True
     if key == "prompt":
-        val = (ask("  system prompt: ", h.get("system_prompt") or "") or "").strip()
+        cur = h.get("system_prompt") or ""
+        val = _preset_choice("system prompt", [], cur, intro=intro)
+        if val is None or val == cur:
+            return False
         harness_set_field(hid, "system_prompt", val)
         if val and not h.get("system_prompt_flag") and (h.get("kind") or "") == "pi":
             harness_set_field(hid, "system_prompt_flag", "--append-system-prompt")
@@ -3564,9 +3894,18 @@ def edit_harness(cat: dict, hid: str) -> bool:
         if j is None:
             return wrote
         try:
-            if _edit_harness_field(fresh, h, spec[j][0]):
+            key = spec[j][0]
+            if key == "name":
+                new = _rename_harness(hid)
+                if new:
+                    hid = new
+                    wrote = True
+            elif _edit_harness_field(fresh, h, key):
                 wrote = True
         except KeyboardInterrupt:
+            continue
+        except SystemExit as e:
+            print(f"  {e}")
             continue
 
 
@@ -3665,7 +4004,7 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
         if j is None:
             return False
         if models:
-            model = models[j] if j < len(models) else ask("  model id: ")
+            model = models[j] if j < len(items) - 1 else ask("  model id: ")
         else:
             model = "" if j == 0 else ask("  model id: ")
     lane = ""
@@ -3882,13 +4221,14 @@ def picker(ctx: Ctx, cat: dict) -> int:
             if place:
                 reg["place_note"] = place["name"] + (" · from ~" if remapped and root == place["cwd"] else "")
             remember_live(reg, rows)
-            # LAB-297: publish sidebar identity once per event (a state change seen
+            # publish sidebar identity once per event (a state change seen
             # here, or a name/harness change after an adopt) — never per refresh.
             for r in identity_events(ident_seen, reg["live"]):
                 report_identity(r["pane_id"], r["name"], r.get("kind") or "", r.get("model") or "")
             ws_labels = {w.get("workspace_id"): w.get("label") or "" for w in snap.get("workspaces") or []}
-            choices = picker_choices(reg, rows, ctx.workspace_id, ws_labels, expanded)
-            width = min(shutil.get_terminal_size((84, 24)).columns, 100)
+            term = shutil.get_terminal_size((84, 24))
+            choices = picker_choices(reg, rows, ctx.workspace_id, ws_labels, expanded, lines=term.lines)
+            width = min(term.columns, 100)
             text = render_picker(reg, choices, top, wider, width=width)
             can_widen = bool(top and wider is not None and wider > len(reg["live"]))
             if tui:
@@ -4018,7 +4358,7 @@ def parse_flags(args: list[str]) -> tuple[dict, list[str]]:
         if a.startswith("--") and "=" in a:
             k, v = a[2:].split("=", 1); opts[k] = v
         elif a in ("--yes", "-y", "--all", "--no-seat", "--no-focus", "-i", "--json", "--spawn",
-                   "--pen", "--split", "--dry-run", "--help", "-h"):
+                   "--pen", "--split", "--dry-run", "--check", "--help", "-h"):
             opts[a.lstrip("-")] = True
         elif a.startswith("--") and i + 1 < len(args):
             opts[a[2:]] = args[i + 1]; i += 1
@@ -4139,6 +4479,8 @@ def main(argv: list[str]) -> int:
     if cmd == "list":
         cmd_list(ctx, bool(opts.get("all"))); return 0
     if cmd == "catalog":
+        if opts.get("check"):
+            return cmd_catalog_check(cat)
         cmd_catalog(cat); return 0
     if cmd == "enter":
         if not pos:
