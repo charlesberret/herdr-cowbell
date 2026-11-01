@@ -10,13 +10,18 @@
 #
 # Each [[harness]] is one way of starting an agent: the executable (a herdr agent
 # kind, or a `command` wrapper), its models, and how it resumes a session.
+# `effort_flag` and `efforts` give the launch sheet an effort row: the flag, and
+# the levels this CLI accepts (empty: type one). A `{}` inside the flag is where
+# the level goes. `effort = "high"` on a row makes that the default.
+# `add_dir_flag` is how the CLI takes another directory it may work in; the
+# sheet's "also in" row and `cowbell new --add-dir` pass it once per directory.
 # Optional: `trust_tool` is the name this harness answers to when a trust checker
 # is asked about it (see [defaults] trust_command); without such a checker on PATH,
 # cowbell shows no trust verdicts at all.
 #
 # Resuming outside herdr: a harness is resume-capable in a plain terminal only
 # when cowbell can choose its session id (`session_id_flag`), start with that id,
-# and replay it later. claude is the one seeded harness that is resume-capable
+# and replay it later. claude and pi are the seeded harnesses that are resume-capable
 # outside herdr; every other seeded harness is honestly absent from Resume when
 # raised outside herdr — its CLI picks its own session id, which cowbell cannot
 # set or replay. (Raised under herdr, session ids are observed and replay works
@@ -97,12 +102,23 @@ green  = ["--tools", "read"]
 yellow = ["--tools", "read,edit,write"]
 red    = []
 
+[lanes.omp]
+# omp v18.12.6 --approval-mode: the highest tool tier it runs without asking.
+# always-ask runs reads and asks before edits or commands; write runs edits and
+# asks before commands; yolo asks for nothing.
+green  = ["--approval-mode", "always-ask"]
+yellow = ["--approval-mode", "write"]
+red    = ["--approval-mode", "yolo"]
+
 [[harness]]
 id = "claude"
 kind = "claude"
 title = "Claude Code"
 models = ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"]
 model_flag = ["--model"]
+effort_flag = ["--effort"]
+efforts = ["low", "medium", "high", "xhigh", "max"]
+add_dir_flag = "--add-dir"
 resume = ["--resume"]
 tools_allow_flag = "--allowedTools"
 tools_deny_flag = "--disallowedTools"
@@ -116,6 +132,9 @@ kind = "codex"
 title = "Codex"
 models = []
 model_flag = ["--model"]
+effort_flag = ["-c", "model_reasoning_effort={}"]   # a config override; {} is the level
+efforts = []                                       # levels depend on the model; type one
+add_dir_flag = "--add-dir"
 resume = ["resume"]   # a subcommand, not a flag
 
 [[harness]]
@@ -124,6 +143,9 @@ kind = "grok"
 title = "Grok CLI"
 models = ["grok-4.6", "grok-4.7", "grok-4.7-build-fast", "grok-4.5"]
 model_flag = ["-m"]
+effort_flag = ["--reasoning-effort"]
+efforts = []                                       # grok --help names no levels; type one
+add_dir_flag = "--add-dir"
 resume = ["--resume"]
 tools_allow_flag = "--allowedTools"
 tools_deny_flag = "--disallowed-tools"
@@ -141,6 +163,9 @@ id = "agy"
 kind = "agy"
 title = "Antigravity (Gemini)"
 models = []
+effort_flag = ["--effort"]
+efforts = ["low", "medium", "high", "xhigh", "max"]
+add_dir_flag = "--add-dir"
 resume = ["--conversation"]
 
 [[harness]]
@@ -156,8 +181,25 @@ kind = "pi"
 title = "pi"
 models = []
 model_flag = ["--model"]
-resume = ["--continue"]
+effort_flag = ["--thinking"]
+efforts = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+resume = ["--session"]   # pi --help: --session <path|id>; --continue takes no id (a word after it is a prompt)
+session_id_flag = "--session-id"   # outside herdr: pi opens or creates the session with this id (a UUID is valid)
+name_flag = "--name"
 tools_allow_flag = "--tools"
+
+[[harness]]
+id = "omp"
+kind = "omp"
+title = "oh-my-pi"
+models = []                   # omp matches fuzzily ("opus", "openai/gpt-5.2"); its roles live in ~/.omp/agent/config.yml
+model_flag = ["--model"]
+effort_flag = ["--thinking"]
+efforts = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]
+add_dir_flag = "--add-dir"
+resume = ["--resume"]         # takes a session id prefix
+tools_allow_flag = "--tools"
+system_prompt_flag = "--append-system-prompt"   # a path is read as a file
 
 [[harness]]
 id = "devin"

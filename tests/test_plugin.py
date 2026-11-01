@@ -74,7 +74,7 @@ class Packaging(unittest.TestCase):
         for name in ("keys_install_text", "def cmd_open", "picker_open_args", "def import_seats"):
             self.assertNotIn(name, text)
         self.assertIn("def unix_confine(", text)
-        self.assertIn("unix_confine(cat, root, base)", text)
+        self.assertIn("unix_confine(cat, root, base, h=h)", text)
         pin = json.loads((ROOT / "vendor" / "VENDORED.json").read_text())
         version = ".".join(map(str, hm.vendored_version()))
         self.assertEqual(pin["version"], version)
@@ -395,7 +395,7 @@ class VendoredUnixConfine(unittest.TestCase):
         cb = hm.core()
         calls: list[tuple] = []
 
-        def fake_herdr(*args, expect_json=True):
+        def fake_herdr(*args, expect_json=True, **_kw):
             calls.append(args)
             if args[:2] == ("tab", "create"):
                 return {
