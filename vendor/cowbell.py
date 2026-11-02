@@ -5168,17 +5168,39 @@ def sheet_hints(keys: list[str], resume: bool = False):
     go, reset = ("resume", "as recorded") if resume else ("start", "defaults")
 
     def hints(i: int):
+        save = [] if resume else [("a", "save as", "a")]
         if keys[i] == "start":
-            return [("⏎", go, "enter"), ("d", reset, "d"), ("esc", "cancel", "esc")]
-        return [("⏎", "change", "enter"), ("s", go, "s"), ("d", reset, "d"), ("esc", "cancel", "esc")]
+            return [("⏎", go, "enter"), ("d", reset, "d"), *save, ("esc", "cancel", "esc")]
+        return [("⏎", "change", "enter"), ("s", go, "s"), ("d", reset, "d"), *save, ("esc", "cancel", "esc")]
     return hints
 
 
+def sheet_save_as(h: dict, spec: LaunchSpec) -> str:
+    """Sheet `a`: keep this shape as a new [[harness]] row, copied whole from `h`
+    (harness_preset) with the sheet's model, effort, permissions and tools as its
+    defaults. Returns the line the sheet shows; launches nothing."""
+    try:
+        raw = ask("  save as harness id (empty skip): ", "")
+    except KeyboardInterrupt:
+        return ""
+    if not (raw or "").strip():
+        return ""
+    hid = slug(raw)
+    title = (h.get("title") or h["id"]) + (f" · {spec.model}" if spec.model else "")
+    try:
+        harness_insert(harness_preset(h, hid, title, spec.model, spec.lane, spec.allow, spec.deny, spec.effort))
+    except SystemExit as e:
+        return str(e).removeprefix("cowbell: ")
+    return f"saved {hid} (a New Session row)"
+
+
 def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
-                 taken: set[str] | None = None, base: LaunchSpec | None = None) -> LaunchSpec | None:
+                 taken: set[str] | None = None, base: LaunchSpec | None = None,
+                 saved: list[str] | None = None) -> LaunchSpec | None:
     """Show the sheet until start (returns the spec) or esc (returns None).
 
     `base` is what `d` restores and what a dim value means; default: the harness defaults.
+    `a` (not on a resume) saves the shape as a new harness; its line goes in `saved`.
     """
     taken = set(taken or ())
     spec = replace(spec, extra=list(spec.extra), dirs=list(spec.dirs))
@@ -5188,7 +5210,7 @@ def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
         body, rows, keys, cmd = sheet_body(cat, h, spec, root, ctx.mode, cols, base)
         if tui_ok():
             res = menu(body, rows, sheet_hints(keys, bool(spec.resume_id)), selected=selected,
-                       hotkeys="sd", foot=cmd, flash=flash)
+                       hotkeys="sd" if spec.resume_id else "sda", foot=cmd, flash=flash)
             flash = ""
             if res[0] == "cancel":
                 return None
@@ -5199,16 +5221,28 @@ def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
             labels = {k_: l_ for k_, l_, *_ in sheet_fields(cat, h, spec, root, base)}
             for n, kk in enumerate(keys[1:], 1):
                 print(f"  {n:>3}  change {labels.get(kk, kk)}")
-            raw = ask("  number to change (empty = start, q = cancel): ", "")
+            raw = ask("  number to change (empty = start, a = save as, q = cancel): " if not spec.resume_id
+                      else "  number to change (empty = resume, q = cancel): ", "")
             if raw.lower() == "q":
                 return None
-            try:
-                n = int(raw) if raw else 0
-            except ValueError:
-                continue
-            if not 0 <= n < len(keys):
-                continue
-            k = keys[n]
+            if raw.lower() == "a" and not spec.resume_id:
+                k = "a"
+                raw = None
+            if raw is not None:
+                try:
+                    n = int(raw) if raw else 0
+                except ValueError:
+                    continue
+                if not 0 <= n < len(keys):
+                    continue
+                k = keys[n]
+        if k == "a" and not spec.resume_id:
+            flash = sheet_save_as(h, spec)
+            if flash.startswith("saved ") and saved is not None:
+                saved.append(flash)
+            if flash and not tui_ok():
+                print(f"  {flash}")
+            continue
         if k in ("start", "s"):
             return spec
         if k == "d":
@@ -5262,10 +5296,11 @@ def seed_spec(cat: dict, h: dict, root: str, name: str, rows: list[dict] | None 
 def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: str,
                        *, save_as: bool, taken: set[str] | None = None, seed: LaunchSpec | None = None) -> bool:
     """Open the launch sheet for this harness, then start what it shows. Esc cancels."""
-    spec = launch_sheet(ctx, cat, h, root, seed or spec_default(cat, h, root, name), taken=taken)
+    saved: list[str] = []
+    spec = launch_sheet(ctx, cat, h, root, seed or spec_default(cat, h, root, name), taken=taken, saved=saved)
     if spec is None:
         return False
-    if save_as:
+    if save_as and not saved:
         try:
             offer_save_as(h, spec.model, spec.lane, spec.allow, spec.deny, spec.effort)
         except SystemExit as e:
@@ -5284,7 +5319,7 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
 
 def edit_sitting(ctx: Ctx, cat: dict, hid: str, root: str) -> bool:
     """New Session `o`: the launch sheet for this harness, opened on how it was last
-    started here (else its defaults). Does not rewrite the catalog. Esc returns to the picker.
+    started here (else its defaults). Writes the catalog only on `a` (save as). Esc returns to the picker.
     """
     h = harness_by_id(cat, hid)
     if not h:

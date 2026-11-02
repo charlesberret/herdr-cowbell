@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Vendor cowbell from `7ac4758`: `a` on a launch sheet saves its shape as a named agent; the sheet stays open and launches nothing.
+
 ## 0.3.2 — 2026-11-02
 
 - Vendor cowbell 0.3.2 from `c432021` (was `787ae8b`): the launch sheet. `n`, and `o` on a New Session row, show every setting an agent takes and the command it will run before it starts; `o` on a Resume row resumes with changed settings and rewrites the roster row. New settings: effort (`effort_flag`, `efforts`, `cowbell new --effort`) and other directories (`add_dir_flag`, `cowbell new --add-dir`). The seed catalog gains an `omp` (oh-my-pi) entry, and pi resumes the session it names. Also: a resume passes the model id it launched with, never a display name such as "Sonnet 5"; the hint bar fits the popup; a harness saved from the sheet keeps its source's seat file, `--name` and `unix_user`; two sessions with one title keep it for one and give the rest a session-id tail.
