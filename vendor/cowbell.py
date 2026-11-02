@@ -361,10 +361,11 @@ def bind_sitting(row: dict, live: dict) -> None:
         if (row.get("harness") or "") in ("", old_kind):
             row["harness"] = live.get("harness") or live_kind
         row["kind"] = live_kind
-    toks = live.get("tokens") if isinstance(live.get("tokens"), dict) else {}
-    qmodel = live.get("model") or toks.get("quota_model") or ""
-    if qmodel:
-        row["model"] = qmodel
+    # `model` is what the row launches with. herdr's quota_model token is a display
+    # name ("Sonnet 5"), never a CLI's model id, so it does not land here.
+    model = str(live.get("model") or "")
+    if model and " " not in model.strip():
+        row["model"] = model
     if live.get("cwd"):
         row["cwd"] = live["cwd"]
     if live.get("pane_id"):
@@ -4228,13 +4229,13 @@ def models_with_default(models: list[str], default: str) -> list[str]:
 
 def harness_preset(src: dict, hid: str, title: str, model: str, lane: str,
                    allow: str, deny: str, effort: str = "") -> dict:
-    """A new [[harness]] copied from `src` with this sitting's model / lane / tools as defaults."""
+    """A new [[harness]] copied whole from `src`, with this sitting's model / lane / tools /
+    effort as its defaults. Every other key rides along (seat and name flags, unix_user,
+    provider), so the saved agent launches the way its source does; a list of keys to
+    keep would drop the next field a harness gains."""
+    sheet_keys = {"id", "title", "models", "lane", "tools_allow", "tools_deny", "effort"}
     out = {"id": hid, "kind": src.get("kind") or hid}
-    for k in ("command", "family", "egress", "trust_tool", "model_flag", "resume",
-              "tools_allow_flag", "tools_deny_flag", "system_prompt_flag", "session_id_flag",
-              "claim_flag", "effort_flag", "efforts", "add_dir_flag"):
-        if src.get(k):
-            out[k] = src[k]
+    out.update({k: v for k, v in src.items() if k not in sheet_keys | {"kind"} and v not in (None, "", [])})
     models = models_with_default(list(src.get("models") or []), model)
     if models:
         out["models"] = models
