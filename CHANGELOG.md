@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Vendor cowbell 0.3.2 from `8a92eee` (was `787ae8b`): the launch sheet. `n`, and `o` on a New Session row, show every setting an agent takes and the command it will run before it starts; `o` on a Resume row resumes with changed settings and rewrites the roster row. New settings: effort (`effort_flag`, `efforts`, `cowbell new --effort`) and other directories (`add_dir_flag`, `cowbell new --add-dir`). The seed catalog gains an `omp` (oh-my-pi) entry, and pi resumes the session it names.
 - Vendor cowbell 0.3.2 from `37edc4d` (was `24427b4`). Resume reads `$CLAUDE_CONFIG_DIR` when it is set, and `~/.claude` when it is not. The same pin includes resume in a still-present pane, `catalog --check`, and a New Session list that names the harness first and fits the window.
 - Vendor cowbell 0.3.2: a pane border follows the current tab sitting; a bare label that is not the tab is stale; `identity sync` restamps `sitting · kind` on `pane.agent_detected`.
 - Restamp or clear `$glyph` when herdr reports `pane.agent_detected` or `pane.exited`, so a tab that swaps harnesses does not keep the old mark.

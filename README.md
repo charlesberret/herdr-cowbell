@@ -43,7 +43,7 @@ The popup shows every coding agent already working in this directory, every one 
     4  grok                   Grok CLI                           ! more reach than needed
        + 9 more
 
-  ⏎ open   n new with options   g widen   esc close
+  ⏎ open   n new   + add   a adopt   o shape   r rename   esc close
 ```
 
 ## Status
@@ -53,8 +53,8 @@ Pre-1.0. The plugin is version 0.3.x and vendors a pinned copy of the cowbell co
 ## What the three sections mean
 
 - **Active.** Agents herdr can see whose working directory is this one or below it. It is a census in a light-gray box. The rows are not numbered and cannot be chosen. Cowbell cannot take over a session that is already running.
-- **Resume.** Agents that ran here before and stopped. Gold heading. Choosing one restarts it with its previous session, where the agent supports that.
-- **New Session.** The agents you have configured, most-used-here first. Green heading. Enter starts one immediately with an automatic name. `n` asks for name, model and permissions first. Blue numbers mark the rows you can open.
+- **Resume.** Agents that ran here before and stopped. Gold heading. Choosing one restarts it with its previous session, where the agent supports that. `o` opens the launch sheet over the recorded settings first, so you can resume with another model, effort, permission level, tool list or extra directories; the roster then remembers what ran.
+- **New Session.** The agents you have configured, most-used-here first. Green heading. Enter starts one immediately with an automatic name and the agent's defaults. `n`, or `o` on the row, opens the launch sheet instead: one screen with every setting that agent takes (name, model, effort, permissions, allowed and denied tools, other directories, the user it runs as) and the exact command it will run. `o` starts from how you last launched that agent here. Settings at their default are dim, changed ones are bright; `s` starts, `d` resets, Esc cancels. Blue numbers mark the rows you can open.
 
 The popup is mouse-first: click or arrow to a row, Enter or the ⏎ button to open, Esc to close. Digits jump to a row, every hint in the bottom bar is clickable, and the list refreshes every two seconds without losing your place. A dim `! more reach than needed` marks an agent your trust checker calls over-privileged for this directory. It is advisory and never stops a launch; agents the checker blocks are left off. Neither appears without a checker.
 
