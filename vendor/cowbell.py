@@ -540,11 +540,41 @@ def canonical_name(pinned: str = "", harness_title: str = "", tab: str = "", sto
     return fallback_name(kind, session_id), "fallback"
 
 
-def disambiguate_names(rows: list[dict]) -> None:
-    """Two sessions can share a title. A session-id tail makes the menu name unique.
+# Who keeps a shared title. A harness title is the session's own name. A tab
+# is a place, and several panes can share it. A stored roster name is what an
+# earlier pass wrote.
+_BARE_RANK = {"harness": 0, "roster": 1, "tab": 2, "utterance": 3, "terminal": 4, "fallback": 5}
 
-    Pinned names stay. The tail is a hyphen plus letters and digits so the
-    result is still a session name.
+
+def _bare_owner(group: list[dict]) -> dict:
+    """The row that keeps the shared name: best source, then earliest created."""
+    def key(item: tuple[int, dict]) -> tuple:
+        i, r = item
+        return (
+            _BARE_RANK.get(r.get("name_source") or "", 9),
+            r.get("created") or "9999",
+            r.get("session_id") or "",
+            i,
+        )
+    return min(enumerate(group), key=key)[1]
+
+
+def _name_with_tail(name: str, tail: str) -> str:
+    if not tail:
+        return ""
+    cand = f"{name[: max(1, 31 - len(tail))]}-{tail}".strip("-")
+    if NAME_RE.match(cand) and len(cand) >= 2 and cand not in {"harness", "h", "h-"}:
+        return cand
+    return ""
+
+
+def disambiguate_names(rows: list[dict]) -> None:
+    """Two sessions can share a title. One keeps it. The rest take a session-id tail.
+
+    The harness title keeps the bare name ahead of a tab label or a stored
+    roster name. Among equal sources, the earliest created row keeps it, then
+    the smallest session id. A pin is never rewritten. When a pin already
+    holds the bare name, every other row in the group takes a tail.
     """
     pins = {r.get("name") for r in rows if r.get("name_source") == "pinned" and r.get("name")}
     groups: dict[str, list[dict]] = {}
@@ -552,25 +582,48 @@ def disambiguate_names(rows: list[dict]) -> None:
         if r.get("name_source") == "pinned":
             continue
         groups.setdefault(r.get("name") or "", []).append(r)
+    owners: dict[str, dict | None] = {}
+    reserved = set(pins)
     for name, group in groups.items():
         if not name or (len(group) < 2 and name not in pins):
+            if name:
+                reserved.add(name)
             continue
-        placed = False
+        owner = None if name in pins else _bare_owner(group)
+        owners[name] = owner
+        if owner is not None:
+            reserved.add(name)
+
+    def take_tail(name: str, rest: list[dict]) -> None:
         for n in (4, 8, 12):
-            tails = [re.sub(r"[^a-z0-9]", "", (r.get("session_id") or "").lower())[:n] for r in group]
-            cands = []
-            for tail in tails:
-                base = name[: max(1, 31 - len(tail))] if tail else name
-                cands.append(f"{base}-{tail}".strip("-") if tail else base)
-            if all(tails) and len(set(cands)) == len(group) and not (set(cands) & pins):
-                for r, cand in zip(group, cands):
+            cands, used = [], set(reserved)
+            ok = True
+            for r in rest:
+                tail = re.sub(r"[^a-z0-9]", "", (r.get("session_id") or "").lower())[:n]
+                cand = _name_with_tail(name, tail)
+                if not cand or cand in used:
+                    ok = False
+                    break
+                used.add(cand)
+                cands.append(cand)
+            if ok:
+                for r, cand in zip(rest, cands):
                     r["name"] = cand
-                placed = True
-                break
-        if placed:
-            continue
-        for i, r in enumerate(group, 1):
-            r["name"] = f"{name[:28]}-{i}"
+                    reserved.add(cand)
+                return
+        n = 2
+        for r in rest:
+            while True:
+                cand = f"{name[:28]}-{n}"
+                n += 1
+                if cand not in reserved and NAME_RE.match(cand):
+                    break
+            r["name"] = cand
+            reserved.add(cand)
+
+    for name, owner in owners.items():
+        rest = [r for r in groups[name] if r is not owner]
+        take_tail(name, rest)
 
 
 # --- catalog -------------------------------------------------------------------
@@ -3020,6 +3073,7 @@ def cmd_enter(ctx: Ctx, cat: dict, name: str, root: str | None = None, target: d
         raise SystemExit(f"cowbell: {r['name']} uses harness {hid!r} which may not resume in {where}")
     cat = scoped
     seat = Path(r["seat"]) if r.get("seat") and Path(r["seat"]).is_file() else None
+    r = {**r, "model": row_launch_model(h, r)}
     if shape is not None:
         spec = shape(cat, h, r, r.get("cwd") or root or ctx.cwd)
         if spec is None:
@@ -3934,8 +3988,20 @@ def highlight(line: str, width: int) -> str:
     return wash + line.replace(reset, reset + wash) + pad + reset
 
 
-def hint_bar(hints: list[tuple[str, str, str]]) -> tuple[str, list[tuple[int, int, str]]]:
-    """[(key label, words, event)] -> (painted line, clickable [x0, x1) spans, 1-based columns)."""
+def hint_bar(hints: list[tuple[str, str, str]], width: int | None = None) -> tuple[str, list[tuple[int, int, str]]]:
+    """[(key label, words, event)] -> (painted line, clickable [x0, x1) spans, 1-based columns).
+
+    Given a `width`, a bar that would not fit sheds words right to left (the keys stay),
+    then whole hints right to left, keeping the first and the last (esc)."""
+    hints = list(hints)
+    size = lambda hs: 2 + sum(len(l) + (1 + len(w) if w else 0) for l, w, _ in hs) + 3 * (len(hs) - 1)
+    if width:
+        for i in range(len(hints) - 1, -1, -1):
+            if size(hints) <= width:
+                break
+            hints[i] = (hints[i][0], "", hints[i][2])
+        while size(hints) > width and len(hints) > 2:
+            del hints[-2]
     parts, spans, col = [], [], 3
     for label, words, ev in hints:
         plain = label + (" " + words if words else "")
@@ -3974,8 +4040,8 @@ def menu(body: list[str], rows: list[int], hints, selected: int = 0,
     scr = (scr or Screen()).open()
     try:
         while True:
-            bar, spans = hint_bar(hints(selected) if callable(hints) else hints)
             cols, height = shutil.get_terminal_size((100, 24))
+            bar, spans = hint_bar(hints(selected) if callable(hints) else hints, cols - 1)
             pinned = ([""] + list(foot)) if foot else []
             foot_ = pinned + ["", bar] + ([paint("  " + flash, RED)] if flash else [])
             view = max(3, height - len(foot_))
@@ -4869,10 +4935,25 @@ def spec_default(cat: dict, h: dict, root: str, name: str = "") -> LaunchSpec:
     )
 
 
+def row_launch_model(h: dict, row: dict) -> str:
+    """The model id a roster row launches with. bind_sitting stores the live display
+    name ("Sonnet 5") for the glyph, so the id comes from the recorded argv when it has
+    one; a name with a space is never a CLI's model id and falls back to the default."""
+    flag, argv = list(h.get("model_flag") or []), row.get("argv")
+    if flag and isinstance(argv, list):
+        for i in range(len(argv) - len(flag)):
+            if argv[i:i + len(flag)] == flag:
+                return str(argv[i + len(flag)])
+    model = str(row.get("model") or "")
+    return "" if " " in model.strip() else model
+
+
 def spec_from_row(cat: dict, h: dict, row: dict, root: str = "") -> LaunchSpec:
     """A roster row as a launch spec. Missing fields fall back to the harness defaults."""
     base = spec_default(cat, h, root or row.get("cwd") or os.getcwd(), row.get("name") or "")
     got = {k: row.get(k) for k in ("model", "effort", "lane", "allow", "deny", "seat") if k in row}
+    if "model" in got:
+        got["model"] = row_launch_model(h, row)
     extra = row.get("extra")
     dirs = _row_dirs(row) if "dirs" in row else list(base.dirs)
     return LaunchSpec(
@@ -5314,9 +5395,12 @@ def _reclaim_cold(live: dict, cold: list[dict]) -> dict | None:
 
 
 def persist_canonical(reg: dict, rows: list[dict]) -> bool:
-    """Write recomputed names back onto unpinned roster rows. A pin is left alone."""
-    changed = False
+    """Write recomputed names back onto unpinned roster rows. A pin is left alone.
 
+    The registry names are already unique. A row this pass will rewrite does
+    not count as still holding its old name, so the session that keeps the
+    bare title is not pushed aside by a sibling that is about to take a tail.
+    """
     def match(src: dict) -> dict | None:
         pane = str(src.get("pane_id") or "")
         if pane and pane != "gone" and not pane.startswith("pid:"):
@@ -5330,17 +5414,20 @@ def persist_canonical(reg: dict, rows: list[dict]) -> bool:
                 return hits[0]
         return None
 
+    matched: list[tuple[dict, dict]] = []
     for src in list(reg.get("live") or []) + list(reg.get("cold") or []):
         if src.get("name_source") == "pinned":
             continue
         target = match(src)
-        if target is None or target.get("name_source") == "pinned":
+        if target is None or target.get("name_source") == "pinned" or not src.get("name"):
             continue
-        desired = src.get("name") or ""
-        if not desired:
-            continue
-        taken = {r.get("name") for r in rows if r is not target and r.get("name")}
-        desired = unique_name(desired, taken)
+        matched.append((src, target))
+    rewriting = {id(target) for _, target in matched}
+    taken = {r.get("name") for r in rows if id(r) not in rewriting and r.get("name")}
+    changed = False
+    for src, target in matched:
+        desired = unique_name(src["name"], taken)
+        taken.add(desired)
         if target.get("name") == desired:
             continue
         target["name"] = desired
