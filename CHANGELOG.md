@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Vendor cowbell from `7ac4758`: `a` on a launch sheet saves its shape as a named agent; the sheet stays open and launches nothing.
+- Vendor cowbell from `b3826b0`: `a` on a launch sheet saves its shape as a named agent; the sheet stays open and launches nothing.
 
 ## 0.3.2 — 2026-11-02
 

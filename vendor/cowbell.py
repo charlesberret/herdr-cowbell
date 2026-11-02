@@ -4253,7 +4253,8 @@ def harness_preset(src: dict, hid: str, title: str, model: str, lane: str,
 
 
 def offer_save_as(src: dict, model: str, lane: str, allow: str, deny: str, effort: str = "") -> str:
-    """Ask for a new harness id. Empty skip or Esc writes nothing. Returns the id, or \"\"."""
+    """Ask for a new harness id and write it. Empty skip or Esc writes nothing. Returns the
+    id, or "". An id already in the catalog raises SystemExit."""
     try:
         raw = ask("  save as harness id (empty skip): ", "")
     except KeyboardInterrupt:
@@ -4261,11 +4262,8 @@ def offer_save_as(src: dict, model: str, lane: str, allow: str, deny: str, effor
     if not (raw or "").strip():
         return ""
     hid = slug(raw)
-    title = src.get("title") or hid
-    if model:
-        title = f"{title} · {model}"
+    title = (src.get("title") or src.get("id") or hid) + (f" · {model}" if model else "")
     harness_insert(harness_preset(src, hid, title, model, lane, allow, deny, effort))
-    print(f"  saved {hid}")
     return hid
 
 
@@ -5175,23 +5173,14 @@ def sheet_hints(keys: list[str], resume: bool = False):
     return hints
 
 
-def sheet_save_as(h: dict, spec: LaunchSpec) -> str:
-    """Sheet `a`: keep this shape as a new [[harness]] row, copied whole from `h`
-    (harness_preset) with the sheet's model, effort, permissions and tools as its
-    defaults. Returns the line the sheet shows; launches nothing."""
+def sheet_save_as(h: dict, spec: LaunchSpec) -> tuple[str, str]:
+    """Sheet `a`: keep this shape as a new [[harness]] row (offer_save_as). Returns
+    (saved id or "", the line the sheet shows). Launches nothing."""
     try:
-        raw = ask("  save as harness id (empty skip): ", "")
-    except KeyboardInterrupt:
-        return ""
-    if not (raw or "").strip():
-        return ""
-    hid = slug(raw)
-    title = (h.get("title") or h["id"]) + (f" · {spec.model}" if spec.model else "")
-    try:
-        harness_insert(harness_preset(h, hid, title, spec.model, spec.lane, spec.allow, spec.deny, spec.effort))
+        hid = offer_save_as(h, spec.model, spec.lane, spec.allow, spec.deny, spec.effort)
     except SystemExit as e:
-        return str(e).removeprefix("cowbell: ")
-    return f"saved {hid} (a New Session row)"
+        return "", str(e).removeprefix("cowbell: ")
+    return hid, (f"saved {hid} (a New Session row)" if hid else "")
 
 
 def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
@@ -5237,9 +5226,9 @@ def launch_sheet(ctx: Ctx, cat: dict, h: dict, root: str, spec: LaunchSpec,
                     continue
                 k = keys[n]
         if k == "a" and not spec.resume_id:
-            flash = sheet_save_as(h, spec)
-            if flash.startswith("saved ") and saved is not None:
-                saved.append(flash)
+            hid, flash = sheet_save_as(h, spec)
+            if hid and saved is not None:
+                saved.append(hid)
             if flash and not tui_ok():
                 print(f"  {flash}")
             continue
@@ -5302,7 +5291,8 @@ def raise_with_options(ctx: Ctx, cat: dict, h: dict, root: str, v: dict, name: s
         return False
     if save_as and not saved:
         try:
-            offer_save_as(h, spec.model, spec.lane, spec.allow, spec.deny, spec.effort)
+            if hid := offer_save_as(h, spec.model, spec.lane, spec.allow, spec.deny, spec.effort):
+                print(f"  saved {hid}")
         except SystemExit as e:
             print(f"  {e}")
     if v["verdict"] == "overprivilege":

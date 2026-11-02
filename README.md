@@ -1,6 +1,6 @@
 # herdr-cowbell
 
-Pick an agent for this directory: running here, resume, or start new.
+Launch or re-launch a coding agent in this directory with the settings you choose, and see the exact command before it runs.
 
 `herdr-cowbell` is a plugin for [herdr](https://github.com/herdrdev/herdr). It opens a popup picker for the directory you are in. The same picker runs outside herdr as the `cowbell` command, which lives in [cowbell-core](https://github.com/charlesberret/cowbell-core).
 
@@ -44,6 +44,28 @@ The popup shows every coding agent already working in this directory, every one 
        + 9 more
 
   ⏎ open   n new   + add   a adopt   o shape   r rename   esc close
+```
+
+`o` on a row opens its **launch sheet** (shown at the popup's width, with model, effort and permissions changed):
+
+```
+  api  claude · Claude Code  new tab in /home/you/api
+
+  ▶  start
+     name           api
+     model          claude-opus-5
+     effort         high
+     permissions    green
+     tools allow    all
+     tools deny     none
+     also in        none
+     seat file      none
+     runs as        you
+
+  $ claude --model claude-opus-5 --effort high
+    --permission-mode plan
+
+  ⏎ start   d defaults   a save as   esc cancel
 ```
 
 ## Status
