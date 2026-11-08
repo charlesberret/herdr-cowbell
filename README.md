@@ -20,7 +20,15 @@ herdr server reload-config
 
 **`install-keys` takes over `prefix+c`**, which is herdr's own new-tab binding. It is a separate, opt-in step. It backs up `config.toml`, blanks the built-in binding, keeps the original as a comment, and appends one marked block. It also writes `~/.config/cowbell/prefix-c.claimed`. After that, a herdr server start reasserts the block if an upgrade rewrote `config.toml` and gave `prefix+c` back to the bare new-tab command. `uninstall-keys` restores the original binding and forgets the claim. Skip this if you would rather keep `prefix+c` as it is, and bind the `open` action yourself.
 
-**Requirements.** herdr 0.9.0 or newer, and python 3.11 or newer on your PATH. macOS ships `/usr/bin/python3` at 3.9, which is too old. `brew install python` or `uv python install 3.12` is enough. No other dependencies. The plugin is stdlib Python. It runs on macOS and Linux.
+**Requirements.** herdr 0.9.0 or newer, and python 3.11 or newer on your PATH. macOS ships `/usr/bin/python3` at 3.9, which is too old. `brew install python` or `uv python install 3.12` is enough. The plugin is stdlib Python. It runs on macOS and Linux.
+
+**Agent icons (optional).** The sidebar and the picker mark each agent with its maker's logo from the [Lobe Icons Font](https://github.com/hschne/lobe-icons-font) (MIT). No system ships that font. Without it you get one letter per kind instead (`C` claude, `G` grok, `X` codex, and so on), never empty boxes. To install it:
+
+```bash
+herdr plugin action invoke herdr-cowbell.install-font
+```
+
+It downloads one pinned release, checks its sha256, and writes it to your user font directory. It needs no sudo. If the logos still draw as boxes, map the range in your terminal (Ghostty: `font-codepoint-map = U+F4000-U+F47FF=lobe-icons`; kitty: `symbol_map U+F4000-U+F47FF lobe-icons`) and open a new window. The [cowbell-core README](https://github.com/charlesberret/cowbell-core#icons-for-each-agent-optional) has the details, including ssh.
 
 If you have previously run `herdr plugin link` on a local copy, unlink it first. herdr refuses to install over a linked plugin.
 

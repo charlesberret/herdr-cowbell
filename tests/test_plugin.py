@@ -50,7 +50,7 @@ class Packaging(unittest.TestCase):
         )
         self.assertTrue(commands)
         self.assertTrue(all(c[0] == "./bin/cowbell" for c in commands))
-        self.assertEqual({c[1] for c in commands}, {"open", "adopt", "keys", "picker", "identity"})
+        self.assertEqual({c[1] for c in commands}, {"open", "adopt", "keys", "picker", "identity", "font"})
         self.assertEqual(
             m["startup"],
             [

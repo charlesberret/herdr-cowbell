@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Vendor cowbell `06a5f3e` (`b3826b0` plus the icon font change only): sidebar and picker marks fall back to one letter per kind when the Lobe Icons Font is missing. New action `install-font` (`herdr plugin action invoke herdr-cowbell.install-font`) installs the pinned font. The README now lists it, instead of saying there are no other dependencies.
 - Vendor cowbell from `b3826b0`: `a` on a launch sheet saves its shape as a named agent; the sheet stays open and launches nothing.
 
 ## 0.3.2 — 2026-11-02

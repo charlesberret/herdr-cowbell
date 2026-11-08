@@ -19,6 +19,9 @@
   cowbell reconcile [--dry-run] rewrite a pane border from the sitting and the agent Herdr detects
   cowbell identity stamp        publish $glyph for every live herdr agent pane (detector kind)
   cowbell identity sync         restamp or clear one pane from a herdr occupancy event
+  cowbell font [install]        is the icon font here; install fetches the pinned
+                                lobe-icons.ttf (sha256 checked). Without it, kinds show
+                                as letters (C claude, G grok, X codex …). COWBELL_GLYPHS=lobe|text forces it
 
 A person running cowbell gets the session in this terminal, including inside herdr
 (`COWBELL_CALLER=person` forces that). An agent caller inside a herdr pane opens a new tab
@@ -2647,8 +2650,8 @@ def focus_agent(pane_id: str) -> None:
 # on raise, adopt, picker refresh, plugin startup stamp, and herdr occupancy
 # hooks (`pane.agent_detected`, `pane.exited`). No interval thread; bt-reporter
 # stays a separate, disabled tool.
-# $glyph is a Lobe Icons Font plane-15 mark (hschne/lobe-icons-font). Ghostty
-# maps U+F4000-U+F47FF onto family "lobe-icons". No TTL: the plate paints this
+# $glyph is a Lobe Icons Font plane-15 mark (hschne/lobe-icons-font) when that font
+# is installed, else one ASCII letter (TEXT_GLYPH). `cowbell font install` fetches it. No TTL: the plate paints this
 # token, and a 24h overlay made the badges vanish. Occupancy events clear or
 # overwrite the overlay when the pane's agent changes.
 
@@ -2672,9 +2675,129 @@ LOBE_GLYPH = {
 }
 
 
+# Without the font a plane-15 mark draws as a box, so each kind also has one
+# ASCII letter. Same width (one cell), so every row stays aligned.
+TEXT_GLYPH = {
+    "claude":       "C",
+    "claudecode":   "C",
+    "grok":         "G",
+    "gemini":       "M",
+    "geminicli":    "M",
+    "agy":          "A",
+    "antigravity":  "A",
+    "codex":        "X",
+    "openai":       "O",
+    "pi":           "P",
+    "copilot":      "H",
+    "devin":        "D",
+    "ollama":       "L",
+}
+
+# The font, pinned. `cowbell font install` fetches exactly this file and refuses
+# any other bytes. MIT-licensed; the marks themselves are their owners' trademarks.
+LOBE_FONT_VERSION = "v5.23.0"
+LOBE_FONT_URL = ("https://github.com/hschne/lobe-icons-font/releases/download/"
+                 f"{LOBE_FONT_VERSION}/lobe-icons.ttf")
+LOBE_FONT_SHA256 = "2e6a3dd83437d51db9b990a0f9ad8e5bc4919d79a8db3a9a83ec1939ab4f4b3e"
+LOBE_FONT_FILE = "lobe-icons.ttf"
+LOBE_FONT_RANGE = "U+F4000-U+F47FF"
+_GLYPH_MODE: str | None = None
+
+
+def font_dirs() -> list[Path]:
+    """Where an installed lobe-icons.ttf can live. The first entry is where install writes."""
+    home = Path.home()
+    if sys.platform == "darwin":
+        return [home / "Library/Fonts", Path("/Library/Fonts")]
+    data = Path(os.environ.get("XDG_DATA_HOME") or home / ".local/share")
+    return [data / "fonts", home / ".fonts", Path("/usr/local/share/fonts"), Path("/usr/share/fonts")]
+
+
+def lobe_font_path() -> Path | None:
+    """The installed font file, or None. Looks in the font directories only; no fc-list."""
+    for d in font_dirs():
+        f = d / LOBE_FONT_FILE
+        if f.is_file():
+            return f
+        if sys.platform != "darwin" and d.is_dir():
+            try:
+                hit = next(d.glob(f"*/{LOBE_FONT_FILE}"), None)
+            except OSError:
+                hit = None
+            if hit:
+                return hit
+    return None
+
+
+def glyph_mode() -> str:
+    """`lobe` or `text`. COWBELL_GLYPHS=lobe|text forces it (say lobe when the font is on the
+    machine that draws the terminal, not this one, e.g. over ssh). Default: lobe only if the
+    font is installed here."""
+    global _GLYPH_MODE
+    forced = (os.environ.get("COWBELL_GLYPHS") or "").strip().lower()
+    if forced in ("lobe", "text"):
+        return forced
+    if _GLYPH_MODE is None:
+        _GLYPH_MODE = "lobe" if lobe_font_path() else "text"
+    return _GLYPH_MODE
+
+
 def glyph_for(kind: str, model: str = "") -> str:
-    """One Lobe mark per harness kind. `model` stays on the call sites (quota_model)."""
-    return LOBE_GLYPH.get(kind or "", "·")
+    """One mark per harness kind: a Lobe mark when the font is there, else one ASCII letter.
+    `model` stays on the call sites (quota_model)."""
+    table = LOBE_GLYPH if glyph_mode() == "lobe" else TEXT_GLYPH
+    return table.get(kind or "", "·")
+
+
+def font_terminal_lines() -> str:
+    return (f"  Ghostty  font-codepoint-map = {LOBE_FONT_RANGE}=lobe-icons\n"
+            f"  kitty    symbol_map {LOBE_FONT_RANGE} lobe-icons\n"
+            "  Then open a new terminal window; an open window keeps its old fonts.")
+
+
+def cmd_font_status() -> int:
+    path = lobe_font_path()
+    forced = (os.environ.get("COWBELL_GLYPHS") or "").strip().lower()
+    print(f"font:  {path if path else 'not installed (run: cowbell font install)'}")
+    print(f"marks: {glyph_mode()}" + (" (COWBELL_GLYPHS)" if forced in ("lobe", "text") else ""))
+    print("If marks draw as boxes, map the range to the font in your terminal:")
+    print(font_terminal_lines())
+    return 0
+
+
+def cmd_font_install(fetch=None) -> int:
+    """Fetch the pinned font, check its sha256, write it to the user font directory."""
+    import hashlib
+    dest_dir = font_dirs()[0]
+    dest = dest_dir / LOBE_FONT_FILE
+    if dest.is_file() and hashlib.sha256(dest.read_bytes()).hexdigest() == LOBE_FONT_SHA256:
+        print(f"already installed: {dest} ({LOBE_FONT_VERSION})")
+        return 0
+    if fetch is None:
+        import urllib.request
+        def fetch(url: str) -> bytes:
+            with urllib.request.urlopen(url, timeout=30) as r:
+                return r.read()
+    try:
+        data = fetch(LOBE_FONT_URL)
+    except Exception as e:
+        print(f"cowbell: could not download {LOBE_FONT_URL}: {e}", file=sys.stderr)
+        return 1
+    got = hashlib.sha256(data).hexdigest()
+    if got != LOBE_FONT_SHA256:
+        print(f"cowbell: refused {LOBE_FONT_URL}: sha256 {got}, expected {LOBE_FONT_SHA256}",
+              file=sys.stderr)
+        return 1
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".part")
+    tmp.write_bytes(data)
+    tmp.replace(dest)
+    if sys.platform != "darwin" and shutil.which("fc-cache"):
+        subprocess.run(["fc-cache", "-f", str(dest_dir)], capture_output=True)
+    print(f"installed: {dest} ({LOBE_FONT_VERSION}, sha256 checked)")
+    print("If marks still draw as boxes, map the range in your terminal:")
+    print(font_terminal_lines())
+    return 0
 
 
 # Titles the agent chrome writes. They are not a sitting.
@@ -5853,6 +5976,14 @@ def main(argv: list[str]) -> int:
         print("cowbell identity stamp|sync", file=sys.stderr)
         print("  stamp  Publish $glyph for every live herdr agent pane (detector kind).", file=sys.stderr)
         print("  sync   Restamp or clear one pane from HERDR_PLUGIN_EVENT_JSON.", file=sys.stderr)
+        return 2
+    if cmd == "font":
+        action = pos[0] if pos else "status"
+        if action == "status":
+            return cmd_font_status()
+        if action == "install":
+            return cmd_font_install()
+        print("cowbell font [status|install]", file=sys.stderr)
         return 2
     if harness_by_id(cat, cmd):
         cmd_dispatch(ctx, cat, cmd, bool(opts.get("yes"))); return 0
