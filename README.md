@@ -134,6 +134,10 @@ herdr plugin link ./herdr-cowbell
 python3 -m unittest discover -s tests -v
 ```
 
+## Testing
+
+Manual user-acceptance scenarios for the plugin (install, open, adopt, keybinding opt-in, vendor pin, uninstall) live in [docs/uat/](docs/uat/README.md). Record pass/fail on [docs/uat/RESULTS-template.md](docs/uat/RESULTS-template.md).
+
 The plugin is a thin skin: `herdr-plugin.toml` declares the actions and the popup, `herdr_cowbell.py` holds the herdr-side commands, and `vendor/` carries the pinned picker with the commit it came from. Issues and pull requests are welcome.
 
 ## About
