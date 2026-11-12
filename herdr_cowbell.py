@@ -395,7 +395,18 @@ def cmd_doctor(run=subprocess.run, schema_doc=None, snapshot=None) -> int:
 
     hooks = toml.get("startup", [])
     check(f"startup hooks declared ({len(hooks)})", len(hooks) >= 1)
-    check("startup keys.ensure answered (claim file)", keys_claim_path().exists())
+
+    def startup_keys_ensure_ok() -> bool:
+        """ensure is a no-op without a prior install-keys claim; with a claim the binding must be live."""
+        if not keys_claimed():
+            return True
+        try:
+            text = HERDR_CONFIG.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        return BLOCK_BEGIN in text and 'command = "herdr-cowbell.open"' in text
+
+    check("startup keys.ensure answered", startup_keys_ensure_ok())
     if snapshot is None:
         try:
             sn = run(["herdr", "api", "snapshot"], capture_output=True, text=True, timeout=10)

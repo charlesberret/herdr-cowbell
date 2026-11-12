@@ -461,12 +461,8 @@ class VendoredUnixConfine(unittest.TestCase):
         self.assertNotIn("agent-run", src)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Doctor(unittest.TestCase):
-    """LAB-1376: the manifest's declared surface is checked against the live schema."""
+    """The manifest's declared surface is checked against the live schema."""
 
     @staticmethod
     def _run(argv, **_):
@@ -484,10 +480,10 @@ class Doctor(unittest.TestCase):
     def _snap():
         return {"result": {"snapshot": {"agents": [{"display_agent": "\U000f4036"}]}}}
 
-    def _doctor(self, schema_doc=None):
+    def _doctor(self, schema_doc=None, *, env_extra=None):
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), \
-             mock.patch.object(hm, "keys_claim_path", return_value=Path(hm.__file__)):
+        env = {**os.environ, **(env_extra or {})}
+        with contextlib.redirect_stdout(buf), mock.patch.dict(os.environ, env, clear=False):
             rc = hm.cmd_doctor(run=self._run, schema_doc=schema_doc or self._schema(),
                                snapshot=self._snap())
         return rc, buf.getvalue()
@@ -502,3 +498,14 @@ class Doctor(unittest.TestCase):
         rc, out = self._doctor(schema_doc=self._schema({"pane.agent_detected": "pane.agent_seen"}))
         self.assertEqual(rc, 1)
         self.assertIn("FAIL  event pane.agent_detected", out)
+
+    def test_keys_ensure_passes_without_claim_file(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        rc, out = self._doctor(env_extra={"COWBELL_CONFIG_DIR": tmp.name})
+        self.assertEqual(rc, 0)
+        self.assertIn("pass  startup keys.ensure answered", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
