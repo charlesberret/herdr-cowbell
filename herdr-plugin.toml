@@ -1,6 +1,6 @@
 id = "herdr-cowbell"
 name = "cowbell"
-version = "0.3.2"
+version = "0.3.3"
 min_herdr_version = "0.9.0"
 description = "Launch or re-launch a coding agent in this directory with the model, effort, permissions and tools you choose, and see the exact command before it runs. Opens a popup; the agent lands in a herdr tab. Same picker as the cowbell command."
 platforms = ["linux", "macos"]
