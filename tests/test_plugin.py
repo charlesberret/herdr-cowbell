@@ -642,5 +642,96 @@ class Doctor(unittest.TestCase):
         self.assertNotIn("FAIL", out)
 
 
+
+class TestDoctorSnapshotShapes(unittest.TestCase):
+    """Every snapshot shape is either unreadable (exit 1) or an empty herd (exit 0); none raise."""
+
+    UNREAD = "FAIL  startup identity.stamp: herdr api snapshot could not be read"
+    EMPTY = "pass  startup identity.stamp: no agents, nothing is live to stamp"
+
+    SHAPES = [
+        ("top-level list", [], UNREAD),
+        ("top-level string", "x", UNREAD),
+        ("top-level number", 3, UNREAD),
+        ("top-level bool", True, UNREAD),
+        ("empty object", {}, EMPTY),
+        ("result list", {"result": []}, EMPTY),
+        ("result truthy list", {"result": ["a"]}, UNREAD),
+        ("result string", {"result": "x"}, UNREAD),
+        ("result number", {"result": 3}, UNREAD),
+        ("result missing snapshot key", {"result": {}}, EMPTY),
+        ("snapshot list", {"result": {"snapshot": []}}, UNREAD),
+        ("snapshot null", {"result": {"snapshot": None}}, UNREAD),
+        ("snapshot string", {"result": {"snapshot": "x"}}, UNREAD),
+        ("snapshot missing agents key", {"result": {"snapshot": {}}}, EMPTY),
+        ("agents null", {"result": {"snapshot": {"agents": None}}}, EMPTY),
+        ("agents empty list", {"result": {"snapshot": {"agents": []}}}, EMPTY),
+        ("agents string", {"result": {"snapshot": {"agents": "x"}}}, UNREAD),
+        ("agents number", {"result": {"snapshot": {"agents": 3}}}, UNREAD),
+        ("agents object", {"result": {"snapshot": {"agents": {"a": 1}}}}, UNREAD),
+        ("agents of non-objects", {"result": {"snapshot": {"agents": ["x", 3, None]}}}, UNREAD),
+        ("agents mixing objects and non-objects",
+         {"result": {"snapshot": {"agents": [{"display_agent": "\U000f4036"}, "x"]}}}, UNREAD),
+    ]
+
+    RAW_ONLY = [
+        ("raw null", "null", UNREAD),
+        ("raw not json", "not json", UNREAD),
+        ("raw blank", "  \n", UNREAD),
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.claim_path = Path(self.tmp.name) / "existing-claim"
+        self.claim_path.write_text("")
+
+    def _doctor(self, snapshot=None, raw=None):
+        def run(argv, **_):
+            if argv == ["herdr", "status"]:
+                return subprocess.CompletedProcess(argv, 0, "server:\n  status: running\n  version: 0.9.1\n", "")
+            if argv == ["herdr", "api", "snapshot"] and raw is not None:
+                return subprocess.CompletedProcess(argv, 0, raw, "")
+            raise AssertionError(f"unexpected run {argv}")
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), \
+             mock.patch.object(hm, "keys_claim_path", return_value=self.claim_path), \
+             mock.patch.dict(os.environ, {"COWBELL_CONFIG_DIR": str(Path(self.tmp.name) / "cowbell")}), \
+             mock.patch.object(hm, "write_keys_claim", side_effect=AssertionError("doctor wrote the claim")), \
+             mock.patch.object(hm, "cmd_keys", side_effect=AssertionError("doctor ran keys")), \
+             mock.patch.object(hm, "_reload_config_after_ensure", side_effect=AssertionError("doctor reloaded")):
+            rc = hm.cmd_doctor(run=run, schema_doc=Doctor._schema(), snapshot=snapshot)
+        return rc, buf.getvalue()
+
+    def _check(self, rc, out, expected):
+        lines = [ln for ln in out.splitlines() if "identity.stamp" in ln]
+        self.assertEqual(lines, [expected], out)
+        if expected == self.UNREAD:
+            self.assertEqual(rc, 1, out)
+        else:
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn("FAIL", out)
+
+    def test_snapshot_param_shapes(self):
+        for name, shape, expected in self.SHAPES:
+            with self.subTest(name, shape=shape):
+                try:
+                    rc, out = self._doctor(snapshot=shape)
+                except Exception as e:
+                    self.fail(f"cmd_doctor raised {type(e).__name__}: {e}")
+                self._check(rc, out, expected)
+
+    def test_raw_json_shapes_through_run(self):
+        raws = [(name, json.dumps(shape), expected) for name, shape, expected in self.SHAPES]
+        for name, raw, expected in raws + self.RAW_ONLY:
+            with self.subTest(name, raw=raw):
+                try:
+                    rc, out = self._doctor(snapshot=None, raw=raw)
+                except Exception as e:
+                    self.fail(f"cmd_doctor raised {type(e).__name__}: {e}")
+                self._check(rc, out, expected)
+
+
 if __name__ == "__main__":
     unittest.main()
