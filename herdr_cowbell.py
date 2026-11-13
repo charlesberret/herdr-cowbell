@@ -402,9 +402,13 @@ def cmd_doctor(run=subprocess.run, schema_doc=None, snapshot=None) -> int:
     if snapshot is None:
         try:
             sn = run(["herdr", "api", "snapshot"], capture_output=True, text=True, timeout=10)
-            snapshot = json.loads(sn.stdout or "{}")
+            if sn.returncode == 0 and (sn.stdout or "").strip():
+                snapshot = json.loads(sn.stdout)
         except (OSError, ValueError, subprocess.TimeoutExpired):
-            snapshot = {}
+            snapshot = None
+    if not isinstance(snapshot, dict):
+        check("startup identity.stamp: herdr api snapshot could not be read", False)
+        return 1
     agents = (snapshot.get("result") or {}).get("snapshot", {}).get("agents") or []
     if agents:
         check("startup identity.stamp answered (a stamped glyph is live)",

@@ -489,7 +489,7 @@ class Doctor(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _doctor(self, schema_doc=None, snapshot=None, claimed=True):
+    def _doctor(self, schema_doc=None, snapshot=None, claimed=True, run=None, read_snapshot=False):
         """Run doctor with the claim path in a temp dir. claimed=True points it at an
         existing temp file; claimed=False leaves the temp claim path absent."""
         buf = io.StringIO()
@@ -504,8 +504,10 @@ class Doctor(unittest.TestCase):
              mock.patch.object(hm, "write_keys_claim", side_effect=AssertionError("doctor wrote the claim")), \
              mock.patch.object(hm, "cmd_keys", side_effect=AssertionError("doctor ran keys")), \
              mock.patch.object(hm, "_reload_config_after_ensure", side_effect=AssertionError("doctor reloaded")):
-            rc = hm.cmd_doctor(run=self._run, schema_doc=schema_doc or self._schema(),
-                               snapshot=self._snap() if snapshot is None else snapshot)
+            if not read_snapshot and snapshot is None:
+                snapshot = self._snap()
+            rc = hm.cmd_doctor(run=run or self._run, schema_doc=schema_doc or self._schema(),
+                               snapshot=snapshot)
         return rc, buf.getvalue()
 
     def _line(self, out, marker):
@@ -552,6 +554,17 @@ class Doctor(unittest.TestCase):
         rc, out = self._doctor(snapshot=self._snap(agents=[{"agent": "claude"}, {"display_agent": ""}]))
         self.assertEqual(rc, 1, out)
         self.assertTrue(self._line(out, "identity.stamp").startswith("FAIL  "), out)
+
+    def test_snapshot_timeout_fails_identity(self):
+        def run(argv, **kw):
+            if argv == ["herdr", "api", "snapshot"]:
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout", 10))
+            return self._run(argv, **kw)
+
+        rc, out = self._doctor(run=run, read_snapshot=True)
+        self.assertEqual(rc, 1, out)
+        self.assertTrue(self._line(out, "identity.stamp").startswith("FAIL  "), out)
+        self.assertNotIn("nothing is live to stamp", out)
 
 
 if __name__ == "__main__":
