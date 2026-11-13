@@ -126,7 +126,7 @@ The picker is a standalone terminal program too, useful outside herdr or over ss
 
 ## Troubleshooting
 
-`cowbell doctor` checks the running herdr answers everything `herdr-plugin.toml` declares: the server version is at least `min_herdr_version`, the `pane.agent_detected`, `pane.exited`, and `pane.agent_status_changed` events and `popup` placement exist in the server's API schema, the plugin context env keys are populated, and the startup hooks have run. Each line prints `pass` or `FAIL` and the command exits non-zero on any miss — a FAIL names the element this herdr does not answer, which means an upgrade is needed or the server predates that surface.
+`cowbell doctor` checks the running herdr answers everything `herdr-plugin.toml` declares: the server version is at least `min_herdr_version`, the `pane.agent_detected`, `pane.exited`, and `pane.agent_status_changed` events and `popup` placement exist in the server's API schema, the plugin context env keys are populated, and the startup hooks have run. Each line prints `pass` or `FAIL`, and the command exits non-zero on any miss. A FAIL names the element that did not answer. On the version, event, or placement lines, that means this herdr predates the surface and needs an upgrade. The startup lines are covered below.
 
 Two startup lines pass on a fresh install. If the `install-keys` action was never run there is no claim file, so the keys line passes and says `ensure` leaves prefix+c alone. If no agent is running, the identity line passes and says nothing is live to stamp. With a live agent, the identity line fails unless some agent carries a stamped glyph. A snapshot that cannot be read fails that line. It is not treated as an empty herd.
 
