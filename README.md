@@ -136,6 +136,8 @@ herdr plugin link ./herdr-cowbell
 python3 -m unittest discover -s tests -v
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the version pin, the doctor contract, and where a change goes.
+
 The plugin is a thin skin: `herdr-plugin.toml` declares the actions and the popup, `herdr_cowbell.py` holds the herdr-side commands, and `vendor/` carries the pinned picker with the commit it came from. Issues and pull requests are welcome.
 
 ## About
