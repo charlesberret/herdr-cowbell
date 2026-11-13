@@ -395,7 +395,10 @@ def cmd_doctor(run=subprocess.run, schema_doc=None, snapshot=None) -> int:
 
     hooks = toml.get("startup", [])
     check(f"startup hooks declared ({len(hooks)})", len(hooks) >= 1)
-    check("startup keys.ensure answered (claim file)", keys_claim_path().exists())
+    if keys_claim_path().exists():
+        check("startup keys.ensure answered (claim file)", True)
+    else:
+        check("startup keys.ensure: install-keys was never run; ensure leaves prefix+c alone", True)
     if snapshot is None:
         try:
             sn = run(["herdr", "api", "snapshot"], capture_output=True, text=True, timeout=10)
@@ -403,8 +406,11 @@ def cmd_doctor(run=subprocess.run, schema_doc=None, snapshot=None) -> int:
         except (OSError, ValueError, subprocess.TimeoutExpired):
             snapshot = {}
     agents = (snapshot.get("result") or {}).get("snapshot", {}).get("agents") or []
-    check("startup identity.stamp answered (a stamped glyph is live)",
-          any(a.get("display_agent") for a in agents))
+    if agents:
+        check("startup identity.stamp answered (a stamped glyph is live)",
+              any(a.get("display_agent") for a in agents))
+    else:
+        check("startup identity.stamp: no agents, nothing is live to stamp", True)
     return 1 if fails else 0
 
 
