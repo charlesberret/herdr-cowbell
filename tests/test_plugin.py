@@ -494,11 +494,11 @@ class Doctor(unittest.TestCase):
         existing temp file; claimed=False leaves the temp claim path absent."""
         buf = io.StringIO()
         if claimed:
-            existing = Path(self.tmp.name) / "existing-claim"
-            existing.write_text("")
-            claim_patch = mock.patch.object(hm, "keys_claim_path", return_value=existing)
+            self.claim_path = Path(self.tmp.name) / "existing-claim"
+            self.claim_path.write_text("")
         else:
-            claim_patch = contextlib.nullcontext()
+            self.claim_path = Path(self.tmp.name) / "absent-claim"
+        claim_patch = mock.patch.object(hm, "keys_claim_path", return_value=self.claim_path)
         with contextlib.redirect_stdout(buf), claim_patch, \
              mock.patch.dict(os.environ, {"COWBELL_CONFIG_DIR": str(self.config_dir)}), \
              mock.patch.object(hm, "write_keys_claim", side_effect=AssertionError("doctor wrote the claim")), \
@@ -532,7 +532,7 @@ class Doctor(unittest.TestCase):
         self.assertIn("install-keys was never run", line)
         self.assertIn("ensure leaves prefix+c alone", line)
         self.assertNotIn("FAIL", out)
-        self.assertFalse(hm.keys_claim_path().exists())
+        self.assertFalse(self.claim_path.exists())
         self.assertFalse(self.config_dir.exists())
 
     def test_existing_claim_still_passes(self):
