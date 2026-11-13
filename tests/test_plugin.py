@@ -648,6 +648,9 @@ class TestDoctorSnapshotShapes(unittest.TestCase):
 
     UNREAD = "FAIL  startup identity.stamp: herdr api snapshot could not be read"
     EMPTY = "pass  startup identity.stamp: no agents, nothing is live to stamp"
+    GLYPH = {"display_agent": "\U000f4036"}
+    NON_DICTS = [("string", "x"), ("number", 3), ("float", 1.5), ("true", True),
+                 ("false", False), ("null", None), ("list", [])]
 
     SHAPES = [
         ("top-level list", [], UNREAD),
@@ -655,7 +658,9 @@ class TestDoctorSnapshotShapes(unittest.TestCase):
         ("top-level number", 3, UNREAD),
         ("top-level bool", True, UNREAD),
         ("empty object", {}, EMPTY),
-        ("result list", {"result": []}, EMPTY),
+        ("result empty list", {"result": []}, UNREAD),
+        ("result false", {"result": False}, UNREAD),
+        ("result null", {"result": None}, UNREAD),
         ("result truthy list", {"result": ["a"]}, UNREAD),
         ("result string", {"result": "x"}, UNREAD),
         ("result number", {"result": 3}, UNREAD),
@@ -664,15 +669,21 @@ class TestDoctorSnapshotShapes(unittest.TestCase):
         ("snapshot null", {"result": {"snapshot": None}}, UNREAD),
         ("snapshot string", {"result": {"snapshot": "x"}}, UNREAD),
         ("snapshot missing agents key", {"result": {"snapshot": {}}}, EMPTY),
-        ("agents null", {"result": {"snapshot": {"agents": None}}}, EMPTY),
         ("agents empty list", {"result": {"snapshot": {"agents": []}}}, EMPTY),
+        ("agents null", {"result": {"snapshot": {"agents": None}}}, UNREAD),
+        ("agents false", {"result": {"snapshot": {"agents": False}}}, UNREAD),
         ("agents string", {"result": {"snapshot": {"agents": "x"}}}, UNREAD),
         ("agents number", {"result": {"snapshot": {"agents": 3}}}, UNREAD),
+        ("agents true", {"result": {"snapshot": {"agents": True}}}, UNREAD),
         ("agents object", {"result": {"snapshot": {"agents": {"a": 1}}}}, UNREAD),
         ("agents of non-objects", {"result": {"snapshot": {"agents": ["x", 3, None]}}}, UNREAD),
-        ("agents mixing objects and non-objects",
-         {"result": {"snapshot": {"agents": [{"display_agent": "\U000f4036"}, "x"]}}}, UNREAD),
     ]
+    for _kind, _bad in NON_DICTS:
+        SHAPES.append((f"agents entry {_kind} after a stamped glyph",
+                       {"result": {"snapshot": {"agents": [GLYPH, _bad]}}}, UNREAD))
+        SHAPES.append((f"agents entry {_kind} before a stamped glyph",
+                       {"result": {"snapshot": {"agents": [_bad, GLYPH]}}}, UNREAD))
+    del _kind, _bad
 
     RAW_ONLY = [
         ("raw null", "null", UNREAD),
