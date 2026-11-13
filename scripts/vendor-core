@@ -6,6 +6,7 @@
 Copies cowbell.py and the seed harnesses.toml, records the source commit in
 vendor/VENDORED.json, and sets herdr-plugin.toml's version to the core's. The
 vendored files are never edited by hand: change the core, then vendor again.
+Refuses a core whose __version__ is older than the one in vendor/VENDORED.json.
 """
 import datetime as dt
 import json
@@ -18,6 +19,11 @@ from pathlib import Path
 
 PLUGIN = Path(__file__).resolve().parent.parent
 PLUGIN_ONLY = ("keys_install_text", "def cmd_open", "picker_open_args", "def import_seats")
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    m = re.match(r"\d+(?:\.\d+)*", version)
+    return tuple(int(part) for part in m.group(0).split(".")) if m else ()
 
 
 def main(argv: list[str]) -> int:
@@ -36,9 +42,14 @@ def main(argv: list[str]) -> int:
         print("vendor-core: no __version__ in the core", file=sys.stderr)
         return 2
     version = m.group(1)
+    vendor = PLUGIN / "vendor"
+    record = vendor / "VENDORED.json"
+    pinned = json.loads(record.read_text()).get("version") if record.is_file() else None
+    if pinned and version_key(version) < version_key(pinned):
+        print(f"vendor-core: core {version} is older than pinned {pinned}; refusing to downgrade", file=sys.stderr)
+        return 4
     git = lambda *a: subprocess.run(["git", "-C", str(core), *a], capture_output=True, text=True).stdout.strip()
     commit, dirty = git("rev-parse", "--short", "HEAD"), bool(git("status", "--porcelain", "--", "cowbell.py", "harnesses.toml"))
-    vendor = PLUGIN / "vendor"
     vendor.mkdir(exist_ok=True)
     shutil.copy2(src, vendor / "cowbell.py")
     shutil.copy2(core / "harnesses.toml", vendor / "harnesses.toml")
