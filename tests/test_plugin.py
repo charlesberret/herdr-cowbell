@@ -3,6 +3,7 @@
 Core behaviour is tested in the cowbell tree; these tests only cover what this plugin adds.
 The vendored herdr raise is pinned here: a place with unix_user must pane-run agent-run.
 """
+import atexit
 import contextlib
 import io
 import json
@@ -24,6 +25,12 @@ import herdr_cowbell as hm  # noqa: E402
 
 SHIM = ROOT / "bin" / "cowbell"
 
+# The shim tests pin PATH to /usr/bin:/bin, where python3 may be older than 3.11.
+# Put the interpreter running these tests first, alone in its own directory.
+_PY_DIR = tempfile.mkdtemp(prefix="herdr-cowbell-py-")
+os.symlink(sys.executable, os.path.join(_PY_DIR, "python3"))
+atexit.register(shutil.rmtree, _PY_DIR, True)
+
 
 def fake_cowbell(directory: Path, version: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
@@ -35,7 +42,7 @@ def fake_cowbell(directory: Path, version: str) -> Path:
 
 def run_shim(*args, path: str, shim: Path = SHIM, env_extra=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("HERDR_", "COWBELL_"))}
-    env.update({"PATH": path, **(env_extra or {})})
+    env.update({"PATH": f"{_PY_DIR}:{path}", **(env_extra or {})})
     return subprocess.run([str(shim), *args], capture_output=True, text=True, env=env, timeout=60)
 
 
