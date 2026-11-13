@@ -54,6 +54,8 @@ The popup shows every coding agent already working in this directory, every one 
   ⏎ open   n new   + add   a adopt   o shape   r rename   esc close
 ```
 
+The `adopt` action pulls the focused agent pane into this workspace's roster.
+
 `o` on a row opens its **launch sheet** (shown at the popup's width, with model, effort and permissions changed):
 
 ```

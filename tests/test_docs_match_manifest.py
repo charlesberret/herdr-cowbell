@@ -103,7 +103,10 @@ class DocsMatchManifest(unittest.TestCase):
 
     def test_every_manifest_action_id_mentioned_in_readme(self):
         missing = sorted(
-            aid for aid in manifest_action_ids(self.manifest) if aid not in self.readme
+            aid
+            for aid in manifest_action_ids(self.manifest)
+            if f"herdr-cowbell.{aid}" not in self.readme
+            and f"`{aid}`" not in self.readme
         )
         self.assertEqual(missing, [], f"README never mentions action id(s): {', '.join(missing)}")
 

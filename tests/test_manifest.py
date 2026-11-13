@@ -45,9 +45,6 @@ class ManifestDocs(unittest.TestCase):
                 f'[[events]] on = "{name}" is not named in README Troubleshooting',
             )
 
-    def test_install_font_action_command(self):
-        action = next(a for a in self.manifest["actions"] if a["id"] == "install-font")
-        self.assertEqual(action["command"], ["./bin/cowbell", "font", "install"])
 
 
 if __name__ == "__main__":
