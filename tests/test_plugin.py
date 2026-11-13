@@ -461,10 +461,6 @@ class VendoredUnixConfine(unittest.TestCase):
         self.assertNotIn("agent-run", src)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Doctor(unittest.TestCase):
     """LAB-1376: the manifest's declared surface is checked against the live schema."""
 
@@ -481,16 +477,43 @@ class Doctor(unittest.TestCase):
         return {"consts": names}
 
     @staticmethod
-    def _snap():
-        return {"result": {"snapshot": {"agents": [{"display_agent": "\U000f4036"}]}}}
+    def _snap(agents=None):
+        if agents is None:
+            agents = [{"display_agent": "\U000f4036"}]
+        return {"result": {"snapshot": {"agents": agents}}}
 
-    def _doctor(self, schema_doc=None):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.config_dir = Path(self.tmp.name) / "cowbell"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _doctor(self, schema_doc=None, snapshot=None, claimed=True, run=None, read_snapshot=False):
+        """Run doctor with the claim path in a temp dir. claimed=True points it at an
+        existing temp file; claimed=False leaves the temp claim path absent."""
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), \
-             mock.patch.object(hm, "keys_claim_path", return_value=Path(hm.__file__)):
-            rc = hm.cmd_doctor(run=self._run, schema_doc=schema_doc or self._schema(),
-                               snapshot=self._snap())
+        if claimed:
+            self.claim_path = Path(self.tmp.name) / "existing-claim"
+            self.claim_path.write_text("")
+        else:
+            self.claim_path = Path(self.tmp.name) / "absent-claim"
+        claim_patch = mock.patch.object(hm, "keys_claim_path", return_value=self.claim_path)
+        with contextlib.redirect_stdout(buf), claim_patch, \
+             mock.patch.dict(os.environ, {"COWBELL_CONFIG_DIR": str(self.config_dir)}), \
+             mock.patch.object(hm, "write_keys_claim", side_effect=AssertionError("doctor wrote the claim")), \
+             mock.patch.object(hm, "cmd_keys", side_effect=AssertionError("doctor ran keys")), \
+             mock.patch.object(hm, "_reload_config_after_ensure", side_effect=AssertionError("doctor reloaded")):
+            if not read_snapshot and snapshot is None:
+                snapshot = self._snap()
+            rc = hm.cmd_doctor(run=run or self._run, schema_doc=schema_doc or self._schema(),
+                               snapshot=snapshot)
         return rc, buf.getvalue()
+
+    def _line(self, out, marker):
+        lines = [ln for ln in out.splitlines() if marker in ln]
+        self.assertEqual(len(lines), 1, out)
+        return lines[0]
 
     def test_green_on_a_faithful_schema(self):
         rc, out = self._doctor()
@@ -502,3 +525,122 @@ class Doctor(unittest.TestCase):
         rc, out = self._doctor(schema_doc=self._schema({"pane.agent_detected": "pane.agent_seen"}))
         self.assertEqual(rc, 1)
         self.assertIn("FAIL  event pane.agent_detected", out)
+
+    def test_missing_claim_passes_and_says_install_keys_was_never_run(self):
+        rc, out = self._doctor(claimed=False)
+        self.assertEqual(rc, 0, out)
+        line = self._line(out, "keys.ensure")
+        self.assertTrue(line.startswith("pass  "), line)
+        self.assertIn("install-keys was never run", line)
+        self.assertIn("ensure leaves prefix+c alone", line)
+        self.assertNotIn("FAIL", out)
+        self.assertFalse(self.claim_path.exists())
+        self.assertFalse(self.config_dir.exists())
+
+    def test_existing_claim_still_passes(self):
+        rc, out = self._doctor()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._line(out, "keys.ensure"), "pass  startup keys.ensure answered (claim file)")
+
+    def test_empty_agent_list_passes_identity(self):
+        rc, out = self._doctor(snapshot=self._snap(agents=[]))
+        self.assertEqual(rc, 0, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("pass  "), line)
+        self.assertIn("nothing is live to stamp", line)
+        self.assertNotIn("FAIL", out)
+
+    def test_agents_without_a_glyph_fail_identity(self):
+        rc, out = self._doctor(snapshot=self._snap(agents=[{"agent": "claude"}, {"display_agent": ""}]))
+        self.assertEqual(rc, 1, out)
+        self.assertTrue(self._line(out, "identity.stamp").startswith("FAIL  "), out)
+
+    def test_snapshot_timeout_fails_identity(self):
+        def run(argv, **kw):
+            if argv == ["herdr", "api", "snapshot"]:
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout", 10))
+            return self._run(argv, **kw)
+
+        rc, out = self._doctor(run=run, read_snapshot=True)
+        self.assertEqual(rc, 1, out)
+        self.assertTrue(self._line(out, "identity.stamp").startswith("FAIL  "), out)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_nonzero_fails_even_with_a_body(self):
+        def run(argv, **kw):
+            if argv == ["herdr", "api", "snapshot"]:
+                return subprocess.CompletedProcess(argv, 1, stdout='{"result":{"snapshot":{"agents":[]}}}', stderr="")
+            return self._run(argv, **kw)
+
+        rc, out = self._doctor(run=run, read_snapshot=True)
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_unparseable_body_fails(self):
+        def run(argv, **kw):
+            if argv == ["herdr", "api", "snapshot"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="not json", stderr="")
+            return self._run(argv, **kw)
+
+        rc, out = self._doctor(run=run, read_snapshot=True)
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_blank_stdout_fails(self):
+        def run(argv, **kw):
+            if argv == ["herdr", "api", "snapshot"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="  \n", stderr="")
+            return self._run(argv, **kw)
+
+        rc, out = self._doctor(run=run, read_snapshot=True)
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_oserror_fails(self):
+        def run(argv, **kw):
+            if argv == ["herdr", "api", "snapshot"]:
+                raise OSError("herdr api snapshot failed")
+            return self._run(argv, **kw)
+
+        rc, out = self._doctor(run=run, read_snapshot=True)
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_null_inner_fails_instead_of_raising(self):
+        rc, out = self._doctor(snapshot={"result": {"snapshot": None}})
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_truthy_nondict_result_fails_instead_of_raising(self):
+        rc, out = self._doctor(snapshot={"result": ["a"]})
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+        self.assertTrue(str(self.claim_path).startswith(self.tmp.name), self.claim_path)
+
+    def test_snapshot_missing_inner_key_is_an_empty_herd(self):
+        rc, out = self._doctor(snapshot={"result": {}})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("nothing is live to stamp", self._line(out, "identity.stamp"))
+        self.assertNotIn("FAIL", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
