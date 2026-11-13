@@ -626,6 +626,15 @@ class Doctor(unittest.TestCase):
         self.assertIn("could not be read", line)
         self.assertNotIn("nothing is live to stamp", out)
 
+    def test_snapshot_truthy_nondict_result_fails_instead_of_raising(self):
+        rc, out = self._doctor(snapshot={"result": ["a"]})
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+        self.assertTrue(str(self.claim_path).startswith(self.tmp.name), self.claim_path)
+
     def test_snapshot_missing_inner_key_is_an_empty_herd(self):
         rc, out = self._doctor(snapshot={"result": {}})
         self.assertEqual(rc, 0, out)
