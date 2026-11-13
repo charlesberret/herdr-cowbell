@@ -566,6 +566,72 @@ class Doctor(unittest.TestCase):
         self.assertTrue(self._line(out, "identity.stamp").startswith("FAIL  "), out)
         self.assertNotIn("nothing is live to stamp", out)
 
+    def test_snapshot_nonzero_fails_even_with_a_body(self):
+        def run(argv, **kw):
+            if argv == ["herdr", "api", "snapshot"]:
+                return subprocess.CompletedProcess(argv, 1, stdout='{"result":{"snapshot":{"agents":[]}}}', stderr="")
+            return self._run(argv, **kw)
+
+        rc, out = self._doctor(run=run, read_snapshot=True)
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_unparseable_body_fails(self):
+        def run(argv, **kw):
+            if argv == ["herdr", "api", "snapshot"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="not json", stderr="")
+            return self._run(argv, **kw)
+
+        rc, out = self._doctor(run=run, read_snapshot=True)
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_blank_stdout_fails(self):
+        def run(argv, **kw):
+            if argv == ["herdr", "api", "snapshot"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="  \n", stderr="")
+            return self._run(argv, **kw)
+
+        rc, out = self._doctor(run=run, read_snapshot=True)
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_oserror_fails(self):
+        def run(argv, **kw):
+            if argv == ["herdr", "api", "snapshot"]:
+                raise OSError("herdr api snapshot failed")
+            return self._run(argv, **kw)
+
+        rc, out = self._doctor(run=run, read_snapshot=True)
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_null_inner_fails_instead_of_raising(self):
+        rc, out = self._doctor(snapshot={"result": {"snapshot": None}})
+        self.assertEqual(rc, 1, out)
+        line = self._line(out, "identity.stamp")
+        self.assertTrue(line.startswith("FAIL"), out)
+        self.assertIn("could not be read", line)
+        self.assertNotIn("nothing is live to stamp", out)
+
+    def test_snapshot_missing_inner_key_is_an_empty_herd(self):
+        rc, out = self._doctor(snapshot={"result": {}})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("nothing is live to stamp", self._line(out, "identity.stamp"))
+        self.assertNotIn("FAIL", out)
+
 
 if __name__ == "__main__":
     unittest.main()
