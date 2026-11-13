@@ -4,7 +4,7 @@
 
 ## 0.3.3 — 2026-11-13
 
-- `cowbell doctor`: a missing prefix-c claim is a pass, because `install-keys` was never run and the startup ensure leaves `prefix+c` alone. Doctor does not create a claim, write herdr config, or reload. An empty agent list passes the identity stamp. A live agent with no glyph fails that line. A snapshot that cannot be read fails that line. It is not treated as an empty herd. A snapshot value that is not an object fails the identity line and does not raise. A missing snapshot key is still an empty herd.
+- `cowbell doctor`: a missing prefix-c claim is a pass, because `install-keys` was never run and the startup ensure leaves `prefix+c` alone. Doctor does not create a claim, write herdr config, or reload. An empty agent list passes the identity stamp. A live herd fails that line when no agent carries a stamped glyph. A snapshot that cannot be read fails that line. It is not treated as an empty herd. A snapshot value that is not an object fails the identity line and does not raise. A missing snapshot key is still an empty herd.
 - Vendor cowbell `06a5f3e` (`b3826b0` plus the icon font change only): sidebar and picker marks fall back to one letter per kind when the Lobe Icons Font is missing. New action `install-font` (`herdr plugin action invoke herdr-cowbell.install-font`) installs the pinned font. The README now lists it, instead of saying there are no other dependencies.
 - Vendor cowbell from `b3826b0`: `a` on a launch sheet saves its shape as a named agent; the sheet stays open and launches nothing.
 

@@ -18,7 +18,7 @@ Run `scripts/vendor-core` only from a cowbell-core checkout whose `__version__` 
 
 The terms: `install-keys` leaves a `prefix+c` claim file; the identity stamp publishes a glyph (a pane's agent-kind mark) for every live agent; a snapshot is what `herdr api snapshot` returns; an empty herd is a snapshot with no agents.
 
-A missing prefix-c claim is a pass, because `install-keys` was never run and the startup ensure leaves `prefix+c` alone. Doctor does not create a claim, write herdr config, or reload. An empty agent list passes the identity stamp. A live agent with no glyph fails that line. A snapshot that cannot be read fails that line. It is not treated as an empty herd. A snapshot value that is not an object fails the identity line and does not raise. A missing snapshot key is still an empty herd.
+A missing prefix-c claim is a pass, because `install-keys` was never run and the startup ensure leaves `prefix+c` alone. Doctor does not create a claim, write herdr config, or reload. An empty agent list passes the identity stamp. A live herd fails that line when no agent carries a stamped glyph. A snapshot that cannot be read fails that line. It is not treated as an empty herd. A snapshot value that is not an object fails the identity line and does not raise. A missing snapshot key is still an empty herd.
 
 ## Tests
 
