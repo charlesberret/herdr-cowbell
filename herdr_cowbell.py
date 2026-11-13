@@ -409,15 +409,18 @@ def cmd_doctor(run=subprocess.run, schema_doc=None, snapshot=None) -> int:
     if not isinstance(snapshot, dict):
         check("startup identity.stamp: herdr api snapshot could not be read", False)
         return 1
-    result = snapshot.get("result")
-    if result and not isinstance(result, dict):
+    result = snapshot.get("result", {})
+    if not isinstance(result, dict):
         check("startup identity.stamp: herdr api snapshot could not be read", False)
         return 1
-    inner = (result or {}).get("snapshot", {})
+    inner = result.get("snapshot", {})
     if not isinstance(inner, dict):
         check("startup identity.stamp: herdr api snapshot could not be read", False)
         return 1
-    agents = inner.get("agents") or []
+    agents = inner.get("agents", [])
+    if not isinstance(agents, list) or not all(isinstance(a, dict) for a in agents):
+        check("startup identity.stamp: herdr api snapshot could not be read", False)
+        return 1
     if agents:
         check("startup identity.stamp answered (a stamped glyph is live)",
               any(a.get("display_agent") for a in agents))
