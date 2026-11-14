@@ -42,7 +42,7 @@ command = ["./bin/cowbell", "font", "install"]
 
 # One-shot: if the user has claimed prefix+c, put the binding back when a herdr
 # upgrade rewrites config.toml. Does not steal the key until install-keys has run.
-# No panes, no report-metadata, no clocks (LAB-297).
+# No panes, no report-metadata, no clocks.
 [[startup]]
 command = ["./bin/cowbell", "keys", "ensure"]
 

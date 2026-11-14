@@ -78,7 +78,7 @@ def path_version(exe: str) -> tuple[int, ...] | None:
 
 
 # Occupancy commands write roster/state — a PATH cowbell at an equal version may be a
-# divergent copy; only a strictly newer PATH build takes them (LAB-1218).
+# divergent copy; only a strictly newer PATH build takes them.
 STRICT_PATH_CMDS = {"identity", "reconcile"}
 
 
@@ -356,7 +356,7 @@ def cmd_keys(action: str, path: Path = HERDR_CONFIG, *, claim: Path | None = Non
 # --- doctor ----------------------------------------------------------------------
 
 def cmd_doctor(run=subprocess.run, schema_doc=None, snapshot=None) -> int:
-    """`cowbell doctor` (LAB-1376): every element herdr-plugin.toml declares — version,
+    """`cowbell doctor`: every element herdr-plugin.toml declares — version,
     events, startup hooks, pane placement, ctx env keys — answered by the live server.
     Pass/fail per element; exit 1 naming misses. Never launches or alters anything."""
     toml = tomllib.loads((Path(__file__).parent / "herdr-plugin.toml").read_text())
