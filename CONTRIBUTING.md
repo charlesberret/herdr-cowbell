@@ -29,7 +29,7 @@ python3 -m unittest discover -s tests -v
 python3 tests/test_plugin.py
 ```
 
-Both commands should exit 0. They need Python 3.11 or newer, the same bar as the plugin. They do not need a herdr server, a config directory, or a network.
+Both commands should exit 0. They need Python 3.11 or newer, the same bar as the plugin. If `python3 --version` is older, the Requirements line in the [README install section](README.md#install) says how to get a newer one; then run both commands with that interpreter in place of `python3`. They do not need a herdr server, a config directory, or a network.
 
 ## Where a change goes
 

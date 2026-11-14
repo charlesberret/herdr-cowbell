@@ -1,4 +1,4 @@
-"""README surface matches herdr-plugin.toml: actions, code blocks, events, Python floor, local links."""
+"""README matches herdr-plugin.toml (actions, code blocks, events) and bin/cowbell (Python floor); local links resolve."""
 from __future__ import annotations
 
 import re
@@ -128,7 +128,7 @@ class DocsMatchManifest(unittest.TestCase):
         self.assertEqual(unknown_cli, [], f"unknown bin/cowbell commands in code blocks: {unknown_cli}")
 
     def test_every_manifest_event_in_troubleshooting_or_events(self):
-        """Every manifest event is named in README Troubleshooting or Events."""
+        """Every manifest event is named in README Troubleshooting (or an Events section, if one is added)."""
         blob = troubleshooting_and_events_text(self.readme)
         missing = [ev for ev in manifest_event_names(self.manifest) if ev not in blob]
         self.assertEqual(

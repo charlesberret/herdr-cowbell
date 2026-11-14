@@ -1,4 +1,4 @@
-"""0.3.3 ship notes: changelog heading and the handoff a stranger follows."""
+"""0.3.3 ship notes: changelog heading and the CONTRIBUTING.md a stranger follows."""
 import unittest
 from pathlib import Path
 
@@ -25,7 +25,7 @@ class ShipNotes(unittest.TestCase):
                 bullets.append(line)
         self.assertEqual(bullets, [])
 
-    def test_handoff_names_the_suite_and_the_vendor_rule(self):
+    def test_contributing_names_the_suite_and_the_vendor_rule(self):
         text = (ROOT / "CONTRIBUTING.md").read_text()
         self.assertIn("python3 -m unittest discover -s tests -v", text)
         self.assertIn("scripts/vendor-core", text)
@@ -44,7 +44,7 @@ class ShipNotes(unittest.TestCase):
             )
             self.assertIn("A missing snapshot key is still an empty herd.", text, name)
 
-    def test_readme_development_points_at_handoff(self):
+    def test_readme_development_points_at_contributing(self):
         text = (ROOT / "README.md").read_text()
         dev = text.split("## Development", 1)[1].split("## ", 1)[0]
         line = (
