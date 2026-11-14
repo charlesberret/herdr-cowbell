@@ -1,8 +1,8 @@
 #!/bin/sh
 # herdr-cowbell launcher — pick a python >= 3.11 (tomllib), then run the plugin module,
 # which runs a newer `cowbell` from PATH or the vendored core (see herdr_cowbell.py).
-# macOS /usr/bin/python3 is 3.9 and silently fails on modern syntax; the
-# fleet venv is preferred, homebrew next, bare python3 last.
+# macOS /usr/bin/python3 is 3.9 and silently fails on modern syntax.
+# Homebrew first, then /usr/local, then bare python3.
 # Follows symlinks, so ~/.local/bin/cowbell -> <repo>/bin/cowbell finds the repo.
 self="$0"
 while [ -L "$self" ]; do
@@ -10,7 +10,7 @@ while [ -L "$self" ]; do
   case "$link" in /*) self="$link" ;; *) self="$(dirname "$self")/$link" ;; esac
 done
 here="$(cd "$(dirname "$self")/.." && pwd)"
-for py in "$HOME/.venvs/fleet/bin/python3" /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+for py in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
   if command -v "$py" >/dev/null 2>&1 \
      && "$py" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
     exec "$py" "$here/herdr_cowbell.py" "$@"
