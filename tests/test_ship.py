@@ -69,7 +69,7 @@ class ShipNotes(unittest.TestCase):
 class HouseClean(unittest.TestCase):
     """No tracked file names a house tracker id, a personal path, or a house machine."""
 
-    SKIP_PARTS = {".git", ".local"}
+    SKIP_PARTS = {".git"}
     SKIP_FILES = {"LICENSE"}
     BANNED = {
         "tracker id": re.compile(r"\b(?:" + "|".join(("LA" "B", "SY" "S", "OF" "C", "DS" "K")) + r")-[0-9]+"),
@@ -82,8 +82,8 @@ class HouseClean(unittest.TestCase):
             + r")\b",
             re.IGNORECASE,
         ),
+        "patron constant": re.compile(re.escape("CHAR" "LES_")),
     }
-    TESTS_ONLY = {"patron constant": re.compile(re.escape("CHAR" "LES_"))}
 
     def tracked_files(self):
         try:
@@ -104,8 +104,6 @@ class HouseClean(unittest.TestCase):
         for rel in self.tracked_files():
             text = (ROOT / rel).read_text(encoding="utf-8", errors="replace")
             banned = dict(self.BANNED)
-            if rel.startswith("tests/"):
-                banned.update(self.TESTS_ONLY)
             for name, pattern in banned.items():
                 for n, line in enumerate(text.splitlines(), 1):
                     if pattern.search(line):
