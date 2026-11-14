@@ -1,4 +1,6 @@
 """0.3.3 ship notes: changelog heading and the CONTRIBUTING.md a stranger follows."""
+import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -62,3 +64,50 @@ class ShipNotes(unittest.TestCase):
             text = (ROOT / name).read_text()
             for banned in ("LA" "B-", "/" "Users/", "avicen" "na", "fici" "no", "hesi" "od"):
                 self.assertNotIn(banned, text, name)
+
+
+class HouseClean(unittest.TestCase):
+    """No tracked file names a house tracker id, a personal path, or a house machine."""
+
+    SKIP_PARTS = {".git", ".local"}
+    SKIP_FILES = {"LICENSE"}
+    BANNED = {
+        "tracker id": re.compile(r"\b(?:" + "|".join(("LA" "B", "SY" "S", "OF" "C", "DS" "K")) + r")-[0-9]+"),
+        "personal path": re.compile(re.escape("/" "Users/")),
+        "house venv": re.compile(re.escape("." "venvs")),
+        "machine name": re.compile(
+            r"\b(?:"
+            + "|".join(("avicen" "na", "fici" "no", "hesi" "od", "e" "co", "poly" "tonic",
+                        "encos" "mic", "anaxi" "mander", "relay" "tower"))
+            + r")\b",
+            re.IGNORECASE,
+        ),
+    }
+    TESTS_ONLY = {"patron constant": re.compile(re.escape("CHAR" "LES_"))}
+
+    def tracked_files(self):
+        try:
+            out = subprocess.run(
+                ["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True
+            ).stdout.decode()
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("not a git checkout")
+        for rel in filter(None, out.split("\0")):
+            parts = Path(rel).parts
+            if self.SKIP_PARTS.intersection(parts) or rel in self.SKIP_FILES:
+                continue
+            if (ROOT / rel).is_file():
+                yield rel
+
+    def test_tracked_files_name_no_house_identifier(self):
+        hits = []
+        for rel in self.tracked_files():
+            text = (ROOT / rel).read_text(encoding="utf-8", errors="replace")
+            banned = dict(self.BANNED)
+            if rel.startswith("tests/"):
+                banned.update(self.TESTS_ONLY)
+            for name, pattern in banned.items():
+                for n, line in enumerate(text.splitlines(), 1):
+                    if pattern.search(line):
+                        hits.append(f"{rel}:{n}: {name}")
+        self.assertEqual(hits, [])

@@ -144,7 +144,7 @@ class WhichCore(unittest.TestCase):
         self.assertEqual(run_shim("--version", path="/usr/bin:/bin").stdout.strip(), f"cowbell {self.vendored}")
 
     def test_equal_version_keeps_occupancy_commands_on_vendor(self):
-        """LAB-1218: at equal version, identity/reconcile stay vendored; readers still follow PATH."""
+        """At equal version, identity/reconcile stay vendored; readers still follow PATH."""
         exe = fake_cowbell(self.base / "same", self.vendored)
         env = {"PATH": f"{self.base / 'same'}:/usr/bin:/bin"}
         for cmd in ("identity", "reconcile"):
@@ -197,7 +197,7 @@ class FreshCheckout(unittest.TestCase):
             self.assertTrue((base / "cfg" / "harnesses.toml").exists())   # seeded from the vendored seed
 
 
-CHARLES_CONFIG = """onboarding = false
+BASE_CONFIG = """onboarding = false
 
 [ui]
 status_indicators = "symbols"
@@ -216,7 +216,7 @@ description = "enter a seat"
 
 class Keys(unittest.TestCase):
     def test_install_places_keys_table_before_array_and_is_idempotent(self):
-        once = hm.keys_install_text(CHARLES_CONFIG)
+        once = hm.keys_install_text(BASE_CONFIG)
         self.assertEqual(once, hm.keys_install_text(once))
         keys_at = once.index("[keys]")
         self.assertLess(keys_at, once.index("[[keys.command]]"))         # TOML: table before array-of-tables
@@ -229,7 +229,7 @@ class Keys(unittest.TestCase):
         self.assertEqual([c["command"] for c in parsed["keys"]["command"]], ["herdr-seats.picker", "herdr-cowbell.open"])
 
     def test_uninstall_restores_original(self):
-        self.assertEqual(hm.keys_uninstall_text(hm.keys_install_text(CHARLES_CONFIG)).strip(), CHARLES_CONFIG.strip())
+        self.assertEqual(hm.keys_uninstall_text(hm.keys_install_text(BASE_CONFIG)).strip(), BASE_CONFIG.strip())
 
     def test_existing_new_tab_is_saved_and_restored(self):
         cfg = "[keys]\nnew_tab = \"prefix+t\"\nsplit = \"prefix+v\"\n"
@@ -298,7 +298,7 @@ class Keys(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         base = Path(tmp.name)
         cfg = base / "config.toml"
-        cfg.write_text(CHARLES_CONFIG, encoding="utf-8")
+        cfg.write_text(BASE_CONFIG, encoding="utf-8")
         claim = base / "prefix-c.claimed"
         hm.cmd_keys("install", cfg, claim=claim)
         hm.cmd_keys("uninstall", cfg, claim=claim)
@@ -469,7 +469,7 @@ class VendoredUnixConfine(unittest.TestCase):
 
 
 class Doctor(unittest.TestCase):
-    """LAB-1376: the manifest's declared surface is checked against the live schema."""
+    """The manifest's declared surface is checked against the live schema."""
 
     @staticmethod
     def _run(argv, **_):
