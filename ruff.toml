@@ -1,0 +1,6 @@
+# Ruff scope: maintainer scripts only. Plugin modules keep their existing layout
+# until a dedicated format pass (same minimum-config approach as cowbell-core QA-C1).
+exclude = ["vendor", "herdr_cowbell.py", "tests"]
+
+[format]
+quote-style = "preserve"

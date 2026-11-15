@@ -1,0 +1,20 @@
+# One extended regex per line; matching lines are not public-surface violations.
+# Same shape as cowbell-core QA-C1 (LAB-623).
+
+# Product vocabulary
+harness
+sitting
+lane
+
+# Author / GitHub identity (LICENSE, README, SECURITY)
+Charles Berret
+charlesberret/
+
+# Maintainer issue refs in comments until history scrub (LAB-625)
+\b(LAB|SYS|OFC|DSK)-[0-9]+\b
+
+# Packaging test that asserts "constitution" stays out of the README lede
+for word in \(.*constitution
+
+# Stranger-facing README example paths (not house home dirs)
+/home/you
