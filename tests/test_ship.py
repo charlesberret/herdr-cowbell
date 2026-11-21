@@ -1,4 +1,4 @@
-"""0.3.3 ship notes: changelog heading and the handoff a stranger follows."""
+"""Ship notes: changelog heading and the handoff a stranger follows."""
 import unittest
 from pathlib import Path
 
@@ -6,15 +6,15 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ShipNotes(unittest.TestCase):
-    def test_first_dated_changelog_heading_is_0_3_3(self):
+    def test_first_dated_changelog_heading_is_0_3_4(self):
         lines = (ROOT / "CHANGELOG.md").read_text().splitlines()
         dated = [ln for ln in lines if ln.startswith("## ") and "Unreleased" not in ln]
         self.assertTrue(dated, "changelog has no dated heading")
-        self.assertEqual(dated[0], "## 0.3.3 — 2026-11-13")
+        self.assertEqual(dated[0], "## 0.3.4 — 2026-11-21")
 
-    def test_nothing_shipped_in_0_3_3_is_still_unreleased(self):
-        # At the 0.3.3 cut this read "Unreleased has no bullets". New work now
-        # lands there, so the check is that no 0.3.3 line was left behind in it.
+    def test_no_bullet_is_listed_under_two_headings(self):
+        # A release moves its bullets out of Unreleased; none may be left behind
+        # or repeated under an older heading.
         sections, current = {}, None
         for line in (ROOT / "CHANGELOG.md").read_text().splitlines():
             if line.startswith("## "):
@@ -22,16 +22,18 @@ class ShipNotes(unittest.TestCase):
                 sections[current] = []
             elif current and line.startswith("- "):
                 sections[current].append(line)
-        unreleased = sections.get("## Unreleased", [])
-        shipped = sections.get("## 0.3.3 — 2026-11-13", [])
-        self.assertTrue(shipped, "0.3.3 section has no bullets")
-        self.assertEqual([b for b in unreleased if b in shipped], [])
+        self.assertTrue(sections.get("## 0.3.4 — 2026-11-21"), "0.3.4 section has no bullets")
+        seen, repeated = set(), []
+        for bullets in sections.values():
+            repeated += [b for b in bullets if b in seen]
+            seen.update(bullets)
+        self.assertEqual(repeated, [])
 
     def test_handoff_names_the_suite_and_the_vendor_rule(self):
         text = (ROOT / "CONTRIBUTING.md").read_text()
         self.assertIn("python3 -m unittest discover -s tests -v", text)
         self.assertIn("scripts/vendor-core", text)
-        self.assertIn("at least `0.3.3`", text)
+        self.assertIn("at least `0.3.4`", text)
         self.assertIn("Do not hand-edit `vendor/`.", text)
 
     def test_doctor_note_does_not_call_a_failed_read_an_empty_herd(self):

@@ -339,12 +339,15 @@ class VendoredUnixConfine(unittest.TestCase):
     """A herdr raise in a place with unix_user runs agent-run.
 
     `herdr agent start` launches as the server uid, so the vendored core
-    sends `pane run` of `agent-run <uid> -- <cmd>` (or `sudo -u` when
-    agent-run is not on PATH). The tab command is not the caller's.
+    sends `pane run` of `agent-run <uid> -- <wall> -- <cmd>`, and refuses
+    when agent-run is not on PATH (no `sudo -u` fallback). The tab command
+    is not the caller's.
 
     `cowbell adopt` only records a pane that is already running. It cannot
     change that pane's uid, and it does not re-exec.
     """
+
+    PROFILE = "/etc/cowbell-test-wall.json"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -382,16 +385,19 @@ class VendoredUnixConfine(unittest.TestCase):
                 return entry.pw_name
         self.skipTest("no other unix account on this host")
 
-    def _agent_run(self) -> Path:
+    def _bin(self, name: str) -> Path:
         bin_dir = self.base / "bin"
-        bin_dir.mkdir()
-        exe = bin_dir / "agent-run"
+        bin_dir.mkdir(exist_ok=True)
+        exe = bin_dir / name
         exe.write_text("#!/bin/sh\nexit 0\n")
         exe.chmod(0o755)
         os.environ["PATH"] = f"{bin_dir}{os.pathsep}{self._saved['PATH'] or ''}"
         return exe
 
-    def _raise(self, unix_user: str) -> list[tuple]:
+    def _agent_run(self) -> Path:
+        return self._bin("agent-run")
+
+    def _raise(self, unix_user: str, wall: bool = True) -> list[tuple]:
         cb = hm.core()
         calls: list[tuple] = []
 
@@ -409,15 +415,19 @@ class VendoredUnixConfine(unittest.TestCase):
             return {}
 
         harness = {"id": "claude", "kind": "claude", "models": [], "resume": []}
+        # The core fails closed: a drop to another account needs a wall. The fixture names
+        # one; its root-ownership check is stubbed, since a test cannot install a root file.
         cat = {
-            "places": {"lab": {"cwd": str(self.root), "unix_user": unix_user}},
+            "places": {"lab": {"cwd": str(self.root), "unix_user": unix_user,
+                               **({"nono_profile": self.PROFILE} if wall else {})}},
             "harness": [harness],
             "defaults": {},
             "lanes": {},
         }
         ctx = cb.Ctx(workspace_id="w1", cwd=str(self.root), mode="tab",
                      live=cb.LiveSource(), launch=cb.HerdrLaunch())
-        with mock.patch.object(cb, "herdr", fake_herdr):
+        with mock.patch.object(cb, "herdr", fake_herdr), \
+             mock.patch.object(cb, "_wall_file_problem", lambda _p: ""):
             pane = ctx.launch.start(cat, harness, "lab-claude", str(self.root), ctx)
         self.assertEqual(pane["pane_id"], "w1:p1")
         return calls
@@ -425,30 +435,33 @@ class VendoredUnixConfine(unittest.TestCase):
     def _pane_run(self, calls: list[tuple]) -> list[str]:
         runs = [c for c in calls if c[:3] == ("pane", "run", "w1:p1")]
         self.assertEqual(len(runs), 1, calls)
-        return shlex.split(runs[0][3])
+        # The core prefixes a `cd -P <root> && [ "$(pwd -P)" = <root> ] &&` guard; the launch
+        # itself is the last `&&` segment.
+        return shlex.split(runs[0][3].split(" && ")[-1])
 
     def test_herdr_raise_with_unix_user_runs_agent_run(self):
         exe = self._agent_run()
+        nono = self._bin("nono")
         calls = self._raise(self.other)
         self.assertFalse([c for c in calls if c[:2] == ("agent", "start")])
         parts = self._pane_run(calls)
-        self.assertEqual(parts[0], str(exe))
-        self.assertEqual(parts[1:4], [self.other, "--", "claude"])
+        self.assertEqual(parts[:4], [str(exe), self.other, "--", str(nono)])
+        self.assertEqual(parts[parts.index("--profile") + 1], self.PROFILE)
+        self.assertEqual(parts[-2:], ["--", "claude"])
         creates = [c for c in calls if c[:2] == ("tab", "create")]
         self.assertEqual(creates[0][creates[0].index("--cwd") + 1], str(self.root))
 
-    def test_herdr_raise_without_agent_run_uses_sudo(self):
-        os.environ["PATH"] = "/usr/bin:/bin"
-        sudo = shutil.which("sudo")
-        if not sudo:
-            self.skipTest("sudo is not on PATH")
-        calls = self._raise(self.other)
-        parts = self._pane_run(calls)
-        self.assertEqual(parts[:5], [sudo, "-u", self.other, "--", "claude"])
+    def test_herdr_raise_without_agent_run_refuses(self):
+        # No sudo -u fallback: it would skip agent-run's checks.
+        self._bin("nono")
+        os.environ["PATH"] = f"{self.base / 'bin'}{os.pathsep}/usr/bin:/bin"
+        with self.assertRaises(SystemExit) as caught:
+            self._raise(self.other)
+        self.assertIn("agent-run", str(caught.exception))
 
     def test_same_uid_stays_on_agent_start(self):
         self._agent_run()
-        calls = self._raise(self.me)
+        calls = self._raise(self.me, wall=False)
         self.assertFalse([c for c in calls if c[:2] == ("pane", "run")])
         starts = [c for c in calls if c[:2] == ("agent", "start")]
         self.assertEqual(starts[0][2], "lab-claude")

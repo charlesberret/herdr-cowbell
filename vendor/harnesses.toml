@@ -18,6 +18,18 @@
 # Optional: `trust_tool` is the name this harness answers to when a trust checker
 # is asked about it (see [defaults] trust_command); without such a checker on PATH,
 # cowbell shows no trust verdicts at all.
+# `egress` says where the agent's work happens: `local` and `mesh` draw ⌂, `vendor`
+# draws ↑ (a row with no egress is vendor). `family` groups ids of one kind.
+# docs/catalog-fields.md lists every catalog key.
+#
+# A row may name requires (argvs run before launch; the first non-zero refuses)
+# and check (one argv). A check with no pass in the last 7 days shows as unproven until cowbell accept records one.
+# [[harness]]
+# id = "example"
+# kind = "example"
+# title = "Example"
+# requires = [["true"]]
+# check = ["true"]
 #
 # Resuming outside herdr: a harness is resume-capable in a plain terminal only
 # when cowbell can choose its session id (`session_id_flag`), start with that id,
@@ -44,13 +56,40 @@
 # default_harness = "lab"
 # unix_user = "lab"
 # require_uid = true
-# nono_profile = "~/.config/nono/lab.json"
+# nono_profile = "/usr/local/share/walls/lab.json"
 #
 # unix_user is an account name (getpwnam). When the process is not already
-# that user, cowbell prefixes `agent-run <user> --` if agent-run is on PATH,
-# otherwise `sudo -u <user> --`. require_uid = true with no unix_user refuses
-# to start. nono_profile, when set, wraps the command in nono inside that
-# drop. Omit nono_profile if you do not use nono.
+# that user, cowbell prefixes `agent-run <user> --`; with no agent-run on PATH
+# it refuses (it never falls back to sudo -u). require_uid = true with no
+# unix_user refuses to start.
+#
+# A drop to another account needs a wall named at the same level as the
+# unix_user, or cowbell refuses: nono_profile (an absolute, root-owned file
+# nobody else can write), or, on a harness only, wall = "door" when the
+# harness's absolute, root-installed `command` (root-owned, as is every
+# directory above it) raises its own sandbox (nono cannot wrap a
+# process that applies its own Seatbelt profile on macOS). A door and a
+# nono_profile in one launch refuse. A door harness:
+#
+# [[harness]]
+# id = "lobby"
+# kind = "pi"
+# command = "/usr/local/libexec/agent-uids/lobby"
+# unix_user = "guest"
+# wall = "door"
+#
+# A harness can carry unix_user, nono_profile and cwd itself, so it is walled
+# wherever it is started and always starts in its own folder (absolute, no
+# symlink, under that account's home or a place it owns; nono's --allow-cwd
+# then grants that folder, never the caller's directory):
+#
+# [[harness]]
+# id = "gemini-guest"
+# kind = "gemini"
+# title = "Gemini (guest)"
+# unix_user = "guest"
+# nono_profile = "/usr/local/share/walls/guest.json"
+# cwd = "/srv/agents/guest/work"
 
 schema = 1           # file format; a newer cowbell may raise it, an older one will not write it
 

@@ -4,15 +4,15 @@ Install stays in the README. This file does not repeat those steps.
 
 ## Versions
 
-Version `0.3.3` was set by hand on 2026-11-13, because cowbell-core was still 0.3.2. Three places read `0.3.3`:
+The plugin's version is the pinned core's. `scripts/vendor-core` sets all three places that read it:
 
 - `herdr-plugin.toml`, the `version` field
 - `vendor/VENDORED.json`, the `version` field
 - `vendor/cowbell.py`, `__version__`
 
-The commit recorded in `vendor/VENDORED.json` stays `06a5f3e`, and its `dirty` field stays `false`.
+`vendor/VENDORED.json` also records the core commit it was copied from, and `dirty` stays `false`.
 
-Run `scripts/vendor-core` only from a cowbell-core checkout whose `__version__` is at least `0.3.3`. Do not hand-edit `vendor/`.
+Run `scripts/vendor-core` only from a clean cowbell-core checkout whose `__version__` is at least `0.3.4`. Do not hand-edit `vendor/`.
 
 ## Doctor
 
