@@ -76,6 +76,31 @@ The popup shows every coding agent already working in this directory, every one 
   ⏎ start   d defaults   a save as   esc cancel
 ```
 
+## In the Herdr desktop app
+
+The same picker also runs in the [Herdr desktop app](https://herdr.dev), as a mod in `app/cowbell`. A key opens it in a popup over the space you are looking at, for the folder of the terminal you are in. Resume and New Session land as a new tab in that space. The popup closes when the agent starts, on Esc, or with its ✕.
+
+Link the mod from a checkout of this repo:
+
+```bash
+git clone https://github.com/charlesberret/herdr-cowbell
+mkdir -p ~/.config/herdr-app/mods
+ln -s "$PWD/herdr-cowbell/app/cowbell" ~/.config/herdr-app/mods/cowbell
+herdr-app check ~/.config/herdr-app/mods/cowbell
+```
+
+The last line should say the check passed. Then add one line to the `"global"` section of `~/.config/herdr-app/keys.json`, with whichever key you like (this one is `cmd-shift-c`; on Linux, try `ctrl-shift-c`):
+
+```json
+"cmd-shift-c": "mod.open:cowbell",
+```
+
+The app picks up both changes while it runs. `mod.open:cowbell` also works from the command palette and from `herdr-app do mod.open --name cowbell`.
+
+**Which cowbell runs.** Linked from a checkout, the mod runs the checkout's `bin/cowbell`, which is the plugin's own choice: a `cowbell` on your PATH at the same version or newer, otherwise the pinned copy in `vendor/`. If you copy the folder instead of linking it, the mod runs the `cowbell` on your PATH. With neither, it shows a notice and starts nothing. The requirements are the plugin's: python 3.11 or newer. The core must be one that starts agents through herdr-core when `COWBELL_HC_SPACE` and `COWBELL_HC_CWD` are set; an older core starts the agent inside the popup and it ends when the popup closes.
+
+**Limits.** It runs on this computer only. In a space on another machine it says so and starts nothing; it never starts the agent here by mistake. The picker runs in a herdr-core terminal of its own, which the window does not list; the popup ends that one terminal when it closes, and nothing else.
+
 ## Status
 
 Pre-1.0. The plugin is version 0.3.x and vendors a pinned copy of the cowbell command (see `vendor/`). Interfaces may still change between releases; changes are listed in [CHANGELOG.md](CHANGELOG.md).

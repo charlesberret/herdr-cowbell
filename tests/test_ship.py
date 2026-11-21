@@ -12,18 +12,20 @@ class ShipNotes(unittest.TestCase):
         self.assertTrue(dated, "changelog has no dated heading")
         self.assertEqual(dated[0], "## 0.3.3 — 2026-11-13")
 
-    def test_unreleased_has_no_bullets(self):
-        bullets = []
-        in_unreleased = False
+    def test_nothing_shipped_in_0_3_3_is_still_unreleased(self):
+        # At the 0.3.3 cut this read "Unreleased has no bullets". New work now
+        # lands there, so the check is that no 0.3.3 line was left behind in it.
+        sections, current = {}, None
         for line in (ROOT / "CHANGELOG.md").read_text().splitlines():
-            if line.startswith("## Unreleased"):
-                in_unreleased = True
-                continue
-            if in_unreleased and line.startswith("## "):
-                break
-            if in_unreleased and line.startswith("- "):
-                bullets.append(line)
-        self.assertEqual(bullets, [])
+            if line.startswith("## "):
+                current = line
+                sections[current] = []
+            elif current and line.startswith("- "):
+                sections[current].append(line)
+        unreleased = sections.get("## Unreleased", [])
+        shipped = sections.get("## 0.3.3 — 2026-11-13", [])
+        self.assertTrue(shipped, "0.3.3 section has no bullets")
+        self.assertEqual([b for b in unreleased if b in shipped], [])
 
     def test_handoff_names_the_suite_and_the_vendor_rule(self):
         text = (ROOT / "CONTRIBUTING.md").read_text()

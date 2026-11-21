@@ -22,3 +22,7 @@ node_modules/
 .idea/
 *.swp
 Thumbs.db
+
+# Written by `herdr-app check` beside a mod
+app/*/gpui-kit.d.ts
+app/*/jsconfig.json

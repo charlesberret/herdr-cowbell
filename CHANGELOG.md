@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A mod for the Herdr desktop app, in `app/cowbell`. A key opens the same picker in a popup over the space you are looking at, for the focused terminal's folder; Resume and New Session land as a new tab in that space. It runs on this computer only for now: in a space on another machine it says so and starts nothing. The install steps are in the README, under "In the Herdr desktop app". It needs a cowbell core that reads `COWBELL_HC_SPACE` and `COWBELL_HC_CWD`.
+
 ## 0.3.3 — 2026-11-13
 
 - `cowbell doctor`: a missing prefix-c claim is a pass, because `install-keys` was never run and the startup ensure leaves `prefix+c` alone. Doctor does not create a claim, write herdr config, or reload. An empty agent list passes the identity stamp. A live herd fails that line when no agent carries a stamped glyph. A snapshot that cannot be read fails that line. It is not treated as an empty herd. A snapshot value that is not an object fails the identity line and does not raise. A missing snapshot key is still an empty herd.

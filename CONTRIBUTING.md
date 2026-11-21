@@ -33,7 +33,7 @@ Both commands should exit 0. They need Python 3.11 or newer, the same bar as the
 
 ## Where a change goes
 
-A change belongs in `herdr_cowbell.py`, `herdr-plugin.toml`, `tests/`, `README.md`, `CHANGELOG.md`, `SECURITY.md`, or `bin/cowbell`. Nothing in this file asks you to edit them just to read it.
+A change belongs in `herdr_cowbell.py`, `herdr-plugin.toml`, `app/cowbell/` (the Herdr desktop app mod), `tests/`, `README.md`, `CHANGELOG.md`, `SECURITY.md`, or `bin/cowbell`. Nothing in this file asks you to edit them just to read it.
 
 Continuous integration is `.github/workflows/test.yml`. It runs `python3 -m unittest discover -s tests -v` on push and pull request, for Python 3.11 and the current 3.x.
 
