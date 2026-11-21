@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.4 — 2026-11-21
+
+- Pins cowbell core 0.3.4: it runs inside the Herdr desktop app (Active from herdr-core, launches as app tabs) and keeps the picker up when reading Resume history as another account fails, showing one warning line instead. The pinned core also fails closed on a launch as another account: it needs a wall (`nono_profile`, or a door) and `agent-run`, and no longer falls back to `sudo -u`.
+
+- A mod for the Herdr desktop app, in `app/cowbell`. A key opens the same picker in a popup over the space you are looking at, for the focused terminal's folder; Resume and New Session land as a new tab in that space. If the picker fails, a notice shows the last lines it printed. It runs on this computer only for now: in a space on another machine it says so and starts nothing. The install steps are in the README, under "In the Herdr desktop app". It needs cowbell core 0.3.4 or newer, which this release pins.
 
 ## 0.3.3 — 2026-11-13
 

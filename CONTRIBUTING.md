@@ -4,15 +4,15 @@ Install stays in the README. This file does not repeat those steps.
 
 ## Versions
 
-Version `0.3.3` was set by hand on 2026-11-13, because cowbell-core was still 0.3.2. Three places read `0.3.3`:
+The plugin's version is the pinned core's. `scripts/vendor-core` sets all three places that read it:
 
 - `herdr-plugin.toml`, the `version` field
 - `vendor/VENDORED.json`, the `version` field
 - `vendor/cowbell.py`, `__version__`
 
-The commit recorded in `vendor/VENDORED.json` stays `06a5f3e`, and its `dirty` field stays `false`.
+`vendor/VENDORED.json` also records the core commit it was copied from, and `dirty` stays `false`.
 
-Run `scripts/vendor-core` only from a cowbell-core checkout whose `__version__` is at least `0.3.3`. Do not hand-edit `vendor/`.
+Run `scripts/vendor-core` only from a clean cowbell-core checkout whose `__version__` is at least `0.3.4`. Do not hand-edit `vendor/`.
 
 ## Doctor
 
@@ -33,7 +33,7 @@ Both commands should exit 0. They need Python 3.11 or newer, the same bar as the
 
 ## Where a change goes
 
-A change belongs in `herdr_cowbell.py`, `herdr-plugin.toml`, `tests/`, `README.md`, `CHANGELOG.md`, `SECURITY.md`, or `bin/cowbell`. Nothing in this file asks you to edit them just to read it.
+A change belongs in `herdr_cowbell.py`, `herdr-plugin.toml`, `app/cowbell/` (the Herdr desktop app mod), `tests/`, `README.md`, `CHANGELOG.md`, `SECURITY.md`, or `bin/cowbell`. Nothing in this file asks you to edit them just to read it.
 
 Continuous integration is `.github/workflows/test.yml`. It runs `python3 -m unittest discover -s tests -v` on push and pull request, for Python 3.11 and the current 3.x.
 
