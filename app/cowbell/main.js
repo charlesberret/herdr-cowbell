@@ -17,8 +17,8 @@ import {
   openOverlay, props, run, spaces, terminals, theme,
 } from "herdr";
 import {
-  FIND_COWBELL, hcRunArgs, nonce, overlaySpec, ownedLive, parseAddress,
-  parseFound, pickerArgv, target, tilde,
+  FIND_COWBELL, cleanupAction, failureNotice, hcRunArgs, nonce, overlaySpec,
+  parseAddress, parseFound, parseGet, pickerArgv, shouldFocus, target, tilde,
 } from "./logic.js";
 
 // This mod's folder name under mods/. Change it if you install under another name.
@@ -33,9 +33,13 @@ export default class Cowbell extends View {
     this.handedOff = false;
     if (checking()) return;
     if (this.role === "bar") {
-      // Give the picker the keyboard once the popup is up.
+      // Give the picker the keyboard once the popup is up, if it is still
+      // running and does not have it already.
       cx.timer.after(60, () => {
-        try { run("pane.focus", { terminal: props()?.terminal }); } catch {}
+        const p = props() ?? {};
+        if (shouldFocus(terminals(), p.terminal, p.token, focused()?.terminal)) {
+          run("pane.focus", { terminal: p.terminal });
+        }
       });
       return;
     }
@@ -93,18 +97,27 @@ export default class Cowbell extends View {
     closeOverlay(props()?.overlay);
   }
 
-  // The bar ends its picker when the popup closes first (Esc reached the
-  // dialog, a click beside it, the ✕). The launcher ends one it started but
-  // never handed to a popup. Only a live terminal carrying this popup's own
-  // label is ever killed.
+  // When the popup goes, the bar settles its picker terminal; the launcher
+  // settles one it started but never handed to a popup. Still running (the
+  // popup closed first): kill it. Ended with a failure: show its last lines.
+  // Then remove it. Only a terminal carrying this popup's own label is ever
+  // killed or removed.
   async close(_cx) {
     if (checking()) return;
     const p = props() ?? {};
     const address = this.role === "bar" ? p.terminal : this.handedOff ? null : this.address;
     const token = this.role === "bar" ? p.token : this.token;
-    if (address && ownedLive(terminals(), address, token)) {
+    if (!address) return;
+    const info = parseGet((await hc(["get", address, "--json"])).stdout);
+    const action = cleanupAction(info, token);
+    if (action === "none") return;
+    if (action === "kill") {
       await hc(["kill", address]);
+    } else if (action === "report") {
+      const text = (await hc(["read", address, "--lines", "40"])).stdout;
+      notify(failureNotice(info, text));
     }
+    await hc(["rm", address]);
   }
 
   render(_cx) {

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- A mod for the Herdr desktop app, in `app/cowbell`. A key opens the same picker in a popup over the space you are looking at, for the focused terminal's folder; Resume and New Session land as a new tab in that space. It runs on this computer only for now: in a space on another machine it says so and starts nothing. The install steps are in the README, under "In the Herdr desktop app". It needs a cowbell core that reads `COWBELL_HC_SPACE` and `COWBELL_HC_CWD`.
+- A mod for the Herdr desktop app, in `app/cowbell`. A key opens the same picker in a popup over the space you are looking at, for the focused terminal's folder; Resume and New Session land as a new tab in that space. If the picker fails, a notice shows the last lines it printed. It runs on this computer only for now: in a space on another machine it says so and starts nothing. The install steps are in the README, under "In the Herdr desktop app". It needs a cowbell core that reads `COWBELL_HC_SPACE` and `COWBELL_HC_CWD`.
 
 ## 0.3.3 — 2026-11-13
 

@@ -99,7 +99,7 @@ The app picks up both changes while it runs. `mod.open:cowbell` also works from 
 
 **Which cowbell runs.** Linked from a checkout, the mod runs the checkout's `bin/cowbell`, which is the plugin's own choice: a `cowbell` on your PATH at the same version or newer, otherwise the pinned copy in `vendor/`. If you copy the folder instead of linking it, the mod runs the `cowbell` on your PATH. With neither, it shows a notice and starts nothing. The requirements are the plugin's: python 3.11 or newer. The core must be one that starts agents through herdr-core when `COWBELL_HC_SPACE` and `COWBELL_HC_CWD` are set; an older core starts the agent inside the popup and it ends when the popup closes.
 
-**Limits.** It runs on this computer only. In a space on another machine it says so and starts nothing; it never starts the agent here by mistake. The picker runs in a herdr-core terminal of its own, which the window does not list; the popup ends that one terminal when it closes, and nothing else.
+**Limits.** It runs on this computer only. In a space on another machine it says so and starts nothing; it never starts the agent here by mistake. The picker runs in a herdr-core terminal of its own, which the window does not list. When the popup closes it ends and removes that one terminal, and nothing else. If the picker fails (exits with an error), the popup closes and a notice shows the last lines it printed.
 
 ## Status
 

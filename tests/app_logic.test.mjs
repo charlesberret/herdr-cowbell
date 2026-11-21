@@ -6,8 +6,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, symlinkSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CONTRACT, OWNER_LABEL, FIND_COWBELL, hcRunArgs, localId, nonce, overlaySpec, ownedLive,
-  parseAddress, parseFound, pickerArgv, target, terminalName, tilde,
+  CONTRACT, OWNER_LABEL, FIND_COWBELL, cleanupAction, failureNotice, hcRunArgs, lastLines, localId,
+  nonce, overlaySpec, owns, ownedLive, parseAddress, parseFound, parseGet, pickerArgv, shouldFocus,
+  target, terminalName, tilde,
 } from "../app/cowbell/logic.js";
 
 test("the contract names live in one place", () => {
@@ -58,9 +59,10 @@ test("pickerArgv passes the contract through env, not a shell", () => {
   ]);
 });
 
-test("hcRunArgs: hidden, removed on exit, labelled as ours", () => {
+test("hcRunArgs: hidden, kept after exit so its output can be read, labelled as ours", () => {
   const args = hcRunArgs({ cwd: "/w", token: "abc", argv: ["x", "picker"] });
-  assert.deepEqual(args.slice(0, 6), ["run", "--bg", "--json", "--rm", "--no-parent", "--no-notify"]);
+  assert.deepEqual(args.slice(0, 5), ["run", "--bg", "--json", "--no-parent", "--no-notify"]);
+  assert.ok(!args.includes("--rm"), "the popup removes the terminal itself, after reading it");
   assert.ok(!args.some((a) => a.startsWith("herdr.")), "no herdr.space/herdr.tab labels");
   assert.deepEqual(args.slice(args.indexOf("--label"), args.indexOf("--label") + 2), ["--label", `${OWNER_LABEL}=abc`]);
   assert.deepEqual(args.slice(args.indexOf("--cwd"), args.indexOf("--cwd") + 2), ["--cwd", "/w"]);
@@ -145,4 +147,71 @@ test("parseFound rejects anything but an absolute path", () => {
   assert.equal(parseFound("path\tcowbell\n"), null);
   assert.equal(parseFound("other\t/x\n"), null);
   assert.equal(parseFound(""), null);
+});
+
+// Shapes below are as hc 0.1.21 printed them on 2026-11-21.
+const RUN_OUT = '{"address":"t11","agent":"env","cwd":"/h","name":"cowbell-x","state":"live","turn":0}';
+const failed = { address: "t11", state: "finished", exit_code: 1, signal: null, labels: { [OWNER_LABEL]: "tok" } };
+const clean = { ...failed, exit_code: 0 };
+const killed = { ...failed, exit_code: null, signal: 1, reason: "killed" };
+const running = { ...failed, state: "live", exit_code: null };
+
+test("parseAddress reads hc run's real output", () => {
+  assert.equal(parseAddress(RUN_OUT), "t11");
+});
+
+test("parseGet reads hc get, and rejects an error or junk", () => {
+  assert.equal(parseGet(JSON.stringify(failed)).exit_code, 1);
+  assert.equal(parseGet('{"error":{"kind":"not_found","message":"no terminal \\"t11\\""}}'), null);
+  assert.equal(parseGet(""), null);
+  assert.equal(parseGet("t11"), null);
+});
+
+test("owns needs this popup's token on the terminal", () => {
+  assert.equal(owns(failed, "tok"), true);
+  assert.equal(owns(failed, "other"), false);
+  assert.equal(owns({ ...failed, labels: {} }, "tok"), false);
+  assert.equal(owns(null, "tok"), false);
+  assert.equal(owns(failed, null), false);
+});
+
+test("cleanupAction: kill if running, report a failure, stay silent on a clean exit", () => {
+  assert.equal(cleanupAction(running, "tok"), "kill");
+  assert.equal(cleanupAction(failed, "tok"), "report");
+  assert.equal(cleanupAction(killed, "tok"), "report");
+  assert.equal(cleanupAction(clean, "tok"), "remove");
+});
+
+test("cleanupAction never touches a terminal that is not ours", () => {
+  for (const info of [running, failed, clean]) {
+    assert.equal(cleanupAction({ ...info, labels: { [OWNER_LABEL]: "someone-else" } }, "tok"), "none");
+    assert.equal(cleanupAction({ ...info, labels: {} }, "tok"), "none");
+  }
+  assert.equal(cleanupAction(null, "tok"), "none");
+});
+
+test("lastLines keeps the last non-blank lines, without colour codes", () => {
+  const text = "one\n\n\x1b[31mtwo\x1b[0m   \nthree\n\n\n";
+  assert.equal(lastLines(text, 2), "two\nthree");
+  assert.equal(lastLines(text), "one\ntwo\nthree");
+  assert.equal(lastLines(""), "");
+});
+
+test("failureNotice carries the code and what the picker printed", () => {
+  const text = "\ncowbell: session discovery as 'guest' failed: launch as guest refused; refusing\n\n";
+  const n = failureNotice(failed, text);
+  assert.equal(n.level, "error");
+  assert.equal(n.title, "cowbell exited with code 1");
+  assert.equal(n.body, "cowbell: session discovery as 'guest' failed: launch as guest refused; refusing");
+  assert.equal(failureNotice(killed, "").title, "cowbell was stopped (signal 1)");
+  assert.equal(failureNotice(failed, "  \n").body, "It printed nothing before it ended.");
+});
+
+test("shouldFocus: only a live picker of ours that lacks the keyboard", () => {
+  const ts = [{ address: "t11", state: "live", labels: { [OWNER_LABEL]: "tok" } }];
+  assert.equal(shouldFocus(ts, "t11", "tok", "t6"), true);
+  assert.equal(shouldFocus(ts, "t11", "tok", "t11"), false, "already focused");
+  assert.equal(shouldFocus([], "t11", "tok", "t6"), false, "gone: no 'no such pane' toast");
+  assert.equal(shouldFocus([{ ...ts[0], state: "finished" }], "t11", "tok", "t6"), false, "ended");
+  assert.equal(shouldFocus(ts, "t11", "other", "t6"), false);
 });

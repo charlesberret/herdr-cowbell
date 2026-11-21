@@ -63,10 +63,11 @@ export function pickerArgv(cowbell, space, cwd) {
 }
 
 // Arguments to `hc` that start the picker, hidden (no herdr.space/herdr.tab
-// labels), removed once it exits, with no parent to notify.
+// labels), with no parent to notify. Not --rm: when the picker dies the popup
+// reads what it printed first, then removes that one terminal itself.
 export function hcRunArgs({ cwd, token, argv }) {
   return [
-    "run", "--bg", "--json", "--rm", "--no-parent", "--no-notify",
+    "run", "--bg", "--json", "--no-parent", "--no-notify",
     "--name", terminalName(token),
     "--cwd", cwd,
     "--label", `${OWNER_LABEL}=${token}`,
@@ -147,4 +148,59 @@ export function tilde(folder, home) {
   if (!folder) return "";
   if (home && (folder === home || folder.startsWith(home + "/"))) return "~" + folder.slice(home.length);
   return folder;
+}
+
+// `hc get <t> --json` -> { address, state, exit_code, signal, labels }, or null.
+export function parseGet(stdout) {
+  try {
+    const j = JSON.parse((stdout || "").trim());
+    if (!j || typeof j !== "object" || typeof j.address !== "string") return null;
+    return j;
+  } catch {
+    return null;
+  }
+}
+
+// True when `info` (from parseGet) is the terminal this popup started.
+export function owns(info, token) {
+  return Boolean(info && token && info.labels && info.labels[OWNER_LABEL] === token);
+}
+
+// What to do with our terminal when its popup goes:
+//   "kill"   it is still running: the popup closed first (Esc, a click beside, the x)
+//   "report" it ended on its own with a failure: tell the person, then remove it
+//   "remove" it ended cleanly: remove it, say nothing
+//   "none"   not ours, or already gone
+export function cleanupAction(info, token) {
+  if (!owns(info, token)) return "none";
+  if (info.state === "live") return "kill";
+  const failed = (info.exit_code !== null && info.exit_code !== undefined && info.exit_code !== 0) || Boolean(info.signal);
+  return failed ? "report" : "remove";
+}
+
+// The last `n` non-blank lines of a terminal's text, without colour codes.
+export function lastLines(text, n = 6) {
+  return (text || "")
+    .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+$/, ""))
+    .filter((l) => l.trim() !== "")
+    .slice(-n)
+    .join("\n");
+}
+
+// The notice for a picker that failed, from parseGet info and `hc read` text.
+export function failureNotice(info, text) {
+  const how = info.signal ? `was stopped (signal ${info.signal})` : `exited with code ${info.exit_code}`;
+  return {
+    title: `cowbell ${how}`,
+    body: lastLines(text) || "It printed nothing before it ended.",
+    level: "error",
+  };
+}
+
+// Give the picker the keyboard only while it runs and something else has it.
+// pane.focus on a terminal that is gone shows a "no such pane" toast.
+export function shouldFocus(terminals, address, token, focusedTerminal) {
+  return ownedLive(terminals, address, token) && focusedTerminal !== address;
 }
